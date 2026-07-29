@@ -51,16 +51,29 @@ public static partial class ImGuiInputHandler
         ulong count, uint* outSeq, void** outEvent)
     {
         var result = OnConsumeSamplesOriginal(thiz,factory, batch, count, outSeq, outEvent);
-        if (IsInitialized && *outEvent != null) ImGuiImplAndroid.HandleInputEvent(new IntPtr(*outEvent));
+        if (*outEvent != null) DispatchInputEvent(new IntPtr(*outEvent));
         return result;
     }
-    
+
     [NativeHook("libinput.so","_ZN7android13InputConsumer7consumeEPNS_26InputEventFactoryInterfaceEblPjPPNS_10InputEventE")]
     public unsafe static long OnConsume(void* thiz, void* factory, bool consumeBatches, ulong frameTime, uint* outSeq, void** outEvent)
     {
         var result = OnConsumeOriginal(thiz, factory, consumeBatches, frameTime, outSeq, outEvent);
-        if (IsInitialized && *outEvent != null) ImGuiImplAndroid.HandleInputEvent(new IntPtr(*outEvent));
+        if (*outEvent != null) DispatchInputEvent(new IntPtr(*outEvent));
         return result;
+    }
+
+    /// <summary>
+    /// 把一个原生输入事件同时送往 ImGui 和 <see cref="InputEvents"/> 订阅方。
+    /// </summary>
+    /// <remarks>
+    /// 两者的启用条件不同：ImGui 必须等上下文就绪（<see cref="IsInitialized"/>），
+    /// 而订阅方（如异步输入 Mod）只要拿到硬件时间戳即可工作，与 ImGui 是否初始化无关。
+    /// </remarks>
+    private static void DispatchInputEvent(IntPtr inputEvent)
+    {
+        if (IsInitialized) ImGuiImplAndroid.HandleInputEvent(inputEvent);
+        if (InputEvents.HasSubscribers) InputEvents.RaiseFrom(inputEvent);
     }
 
     private static JavaClass? s_utilsClass;

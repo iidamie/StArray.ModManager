@@ -91,9 +91,7 @@ public static partial class ImGuiInputHandler
     public unsafe static bool OnInitializeMotionEvent(void* @event, void* message)
     {
         var result = OnInitializeMotionEventOriginal(@event, message);
-        var x = AndroidInput.AMotionEvent_getX(new(@event), 0);
-        var y = AndroidInput.AMotionEvent_getY(new(@event), 0);
-        ImGuiImplAndroid.HandleInputEvent(new IntPtr(@event));
+        DispatchInputEvent(new IntPtr(@event));
         return result;
     }
 

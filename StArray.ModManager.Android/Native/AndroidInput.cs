@@ -1,4 +1,4 @@
-﻿namespace StArray.ModManager.Android.Native;
+namespace StArray.ModManager.Android.Native;
 using System;
 using System.Runtime.InteropServices;
 
@@ -170,19 +170,29 @@ public static class AndroidInput
 
     // ======================== 辅助方法（扩展风格） ========================
 
+    /// <summary>从原始 action 值获取主动作（去除指针索引）</summary>
+    public static MotionAction GetMainAction(int rawAction)
+    {
+        return (MotionAction)(rawAction & MotionMask.Action);
+    }
+
+    /// <summary>从原始 action 值获取指针索引</summary>
+    public static int GetPointerIndex(int rawAction)
+    {
+        return (rawAction & MotionMask.PointerIndex) >> MotionMask.PointerIndexShift;
+    }
+
     /// <summary>获取触摸事件的主动作（去除指针索引）</summary>
     public static MotionAction GetMainAction(this IntPtr ev)
     {
         if (AInputEvent_getType(ev) != EventType.Motion)
             throw new InvalidOperationException("事件不是 Motion 类型");
-        int raw = AMotionEvent_getAction(ev);
-        return (MotionAction)(raw & MotionMask.Action);
+        return GetMainAction(AMotionEvent_getAction(ev));
     }
 
     /// <summary>获取触摸事件的指针索引（用于多点触控）</summary>
     public static int GetPointerIndex(this IntPtr ev)
     {
-        int raw = AMotionEvent_getAction(ev);
-        return (raw & MotionMask.PointerIndex) >> MotionMask.PointerIndexShift;
+        return GetPointerIndex(AMotionEvent_getAction(ev));
     }
 }

@@ -50,32 +50,6 @@ public static class InputEvents
     }
 
     /// <summary>
-    /// 直接注入一个合成触摸事件，用于测试。
-    /// </summary>
-    /// <remarks>
-    /// 不会触碰任何原生指针，仅把 <paramref name="info"/> 广播给全部订阅方。
-    /// 异常处理与 <see cref="RaiseFrom"/> 一致。
-    /// </remarks>
-    public static void Inject(TouchEventInfo info)
-    {
-        Action<TouchEventInfo>? handlers = s_onTouch;
-        if (handlers == null)
-            return;
-
-        foreach (Delegate handler in handlers.GetInvocationList())
-        {
-            try
-            {
-                ((Action<TouchEventInfo>)handler)(info);
-            }
-            catch (Exception exception)
-            {
-                LogOnce($"Touch event subscriber threw: {exception}");
-            }
-        }
-    }
-
-    /// <summary>
     /// 从原生 <c>AInputEvent*</c> 解析并广播。
     /// 由 ImGui 输入 Hook 在调用原函数之后立即调用。
     /// 任何异常都在此吞掉 —— 此处位于原生调用栈上，异常逃逸会直接杀死输入系统。

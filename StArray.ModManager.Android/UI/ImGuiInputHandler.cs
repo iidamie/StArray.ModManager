@@ -88,9 +88,12 @@ public static partial class ImGuiInputHandler
     }*/
     
     [NativeHook("GetInitializeMotionEventAddress")]
-    public unsafe static bool OnInitializeMotionEvent(void* @event, void* message)
+    public unsafe static bool OnInitializeMotionEvent(
+        void* consumer,
+        void* @event,
+        void* message)
     {
-        var result = OnInitializeMotionEventOriginal(@event, message);
+        var result = OnInitializeMotionEventOriginal(consumer, @event, message);
         DispatchInputEvent(new IntPtr(@event));
         return result;
     }

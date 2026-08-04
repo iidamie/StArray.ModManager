@@ -1,14 +1,22 @@
-﻿namespace StArray.ModManager.Android.Native;
 using System;
 using System.Runtime.InteropServices;
 
+namespace StArray.ModManager.Android.Native;
+
 /// <summary>
-/// Android NDK 输入系统 API 的 C# P/Invoke 封装。
-/// 对应 AOSP 的 input.h 和 libui.so / libandroid.so。
+/// Android NDK 输入系统 API 的 P/Invoke 封装（<c>libandroid.so</c>，对应 NDK 的 <c>android/input.h</c>）。
+/// 只导入读取输入事件所需的最小集合；这些都是 NDK 公开导出，无需额外权限或原生库。
 /// </summary>
 public static class AndroidInput
 {
-    // ======================== 常量与枚举 ========================
+    private const string Lib = "libandroid.so";
+
+    /// <summary>输入事件类型（<c>AINPUT_EVENT_TYPE_*</c>）</summary>
+    public enum EventType
+    {
+        Key = 1,
+        Motion = 2,
+    }
 
     /// <summary>ALooper_prepare 选项</summary>
     [Flags]
@@ -18,36 +26,12 @@ public static class AndroidInput
         AllowNonCallbacks = 1 << 0,
     }
 
-    /// <summary>输入事件类型</summary>
-    public enum EventType
-    {
-        Key = 1,
-        Motion = 2,
-    }
-
     /// <summary>按键动作</summary>
     public enum KeyAction
     {
         Down = 0,
         Up = 1,
         Multiple = 2,
-    }
-
-    /// <summary>触摸动作（主动作需用 ActionMask 提取）</summary>
-    public enum MotionAction
-    {
-        Down = 0,
-        Up = 1,
-        Move = 2,
-        Cancel = 3,
-        Outside = 4,
-        PointerDown = 5,
-        PointerUp = 6,
-        HoverEnter = 7,
-        HoverMove = 8,
-        HoverExit = 9,
-        ButtonPress = 10,
-        ButtonRelease = 11,
     }
 
     /// <summary>Meta 键状态</summary>
@@ -63,15 +47,32 @@ public static class AndroidInput
         AltRightOn = 0x20,
     }
 
-    /// <summary>触摸事件动作掩码工具</summary>
-    public static class MotionMask
+    /// <summary>触摸动作（<c>AMOTION_EVENT_ACTION_*</c>）。原始值需先与 <see cref="ActionMask"/> 相与。</summary>
+    public enum MotionAction
     {
-        public const int Action = 0xFF;
-        public const int PointerIndex = 0xFF00;
-        public const int PointerIndexShift = 8;
+        Down = 0,
+        Up = 1,
+        Move = 2,
+        Cancel = 3,
+        Outside = 4,
+        PointerDown = 5,
+        PointerUp = 6,
+        HoverMove = 7,
+        Scroll = 8,
+        HoverEnter = 9,
+        HoverExit = 10,
+        ButtonPress = 11,
+        ButtonRelease = 12,
     }
 
-    // ======================== 不透明句柄结构体 ========================
+    /// <summary>从 <c>AMotionEvent_getAction</c> 的原始值中取出动作位</summary>
+    public const int ActionMask = 0xFF;
+
+    /// <summary>从 <c>AMotionEvent_getAction</c> 的原始值中取出指针索引位</summary>
+    public const int ActionPointerIndexMask = 0xFF00;
+
+    /// <summary>指针索引位的右移量</summary>
+    public const int ActionPointerIndexShift = 8;
 
     /// <summary>不透明输入事件句柄</summary>
     [StructLayout(LayoutKind.Sequential)]
@@ -85,105 +86,98 @@ public static class AndroidInput
     [StructLayout(LayoutKind.Sequential)]
     public struct ALooper { }
 
-    // ======================== 委托类型 ========================
-
     /// <summary>
     /// AInputQueue_attachLooper 回调签名。
-    /// 必须保持委托实例的引用，防止被 GC 回收。
+    /// 调用方必须保持委托实例的引用，防止被 GC 回收。
     /// </summary>
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate int InputQueueCallback(int fd, int events, IntPtr data);
-
-    // ======================== P/Invoke 导入 ========================
-
-    private const string Lib = "libandroid.so";
+    public delegate int InputQueueCallback(int fd, int events, nint data);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern IntPtr ALooper_prepare(PrepareFlags opts);
+    public static extern nint ALooper_prepare(PrepareFlags opts);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     public static extern void AInputQueue_attachLooper(
-        IntPtr queue,
-        IntPtr looper,
+        nint queue,
+        nint looper,
         int ident,
         InputQueueCallback callback,
-        IntPtr data
-    );
+        nint data);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern void AInputQueue_detachLooper(IntPtr queue);
+    public static extern void AInputQueue_detachLooper(nint queue);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern int AInputQueue_getEvent(
-        IntPtr queue,
-        out IntPtr outEvent
-    );
+    public static extern int AInputQueue_getEvent(nint queue, out nint outEvent);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern void AInputQueue_finishEvent(
-        IntPtr queue,
-        IntPtr ev,
-        int handled
-    );
+    public static extern void AInputQueue_finishEvent(nint queue, nint inputEvent, int handled);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern EventType AInputEvent_getType(IntPtr ev);
+    public static extern EventType AInputEvent_getType(nint inputEvent);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern int AKeyEvent_getKeyCode(IntPtr ev);
+    public static extern int AMotionEvent_getAction(nint motionEvent);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern KeyAction AKeyEvent_getAction(IntPtr ev);
+    public static extern int AKeyEvent_getKeyCode(nint inputEvent);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern MetaState AKeyEvent_getMetaState(IntPtr ev);
+    public static extern KeyAction AKeyEvent_getAction(nint inputEvent);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern int AKeyEvent_getRepeatCount(IntPtr ev);
+    public static extern MetaState AKeyEvent_getMetaState(nint inputEvent);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern int AMotionEvent_getAction(IntPtr ev);
-
-    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern float AMotionEvent_getX(IntPtr ev, int pointerIndex);
-
-    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern float AMotionEvent_getY(IntPtr ev, int pointerIndex);
-
-    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern int AMotionEvent_getPointerCount(IntPtr ev);
-
-    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern int AMotionEvent_getPointerId(IntPtr ev, int pointerIndex);
+    public static extern int AKeyEvent_getRepeatCount(nint inputEvent);
 
     /// <summary>
-    /// 事件发生时刻,单位纳秒,时钟源为 <c>CLOCK_MONOTONIC</c>。
-    /// 这是输入事件由内核打上的硬件时间戳,早于并独立于渲染帧,
+    /// 事件发生时刻，单位纳秒，时钟源为 <c>CLOCK_MONOTONIC</c>。
+    /// 这是输入事件由内核打上的硬件时间戳，早于并独立于渲染帧，
     /// 因此可用来还原「按下的真实时刻」而不受帧率采样影响。
-    /// 对应 NDK <c>AMotionEvent_getEventTime</c>(android/input.h:1174)。
     /// </summary>
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern long AMotionEvent_getEventTime(IntPtr ev);
+    public static extern long AMotionEvent_getEventTime(nint motionEvent);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-    public static extern long AMotionEvent_getDownTime(IntPtr ev);
+    public static extern long AMotionEvent_getDownTime(nint motionEvent);
 
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int AMotionEvent_getPointerCount(nint motionEvent);
 
-    // ======================== 辅助方法（扩展风格） ========================
+    /// <summary>取出指针的稳定 ID；它跨越后续 MotionEvent，比索引更适合跟踪多指输入。</summary>
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int AMotionEvent_getPointerId(nint motionEvent, int pointerIndex);
 
-    /// <summary>获取触摸事件的主动作（去除指针索引）</summary>
-    public static MotionAction GetMainAction(this IntPtr ev)
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    public static extern float AMotionEvent_getX(nint motionEvent, int pointerIndex);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    public static extern float AMotionEvent_getY(nint motionEvent, int pointerIndex);
+
+    /// <summary>取出主动作（已去除指针索引）</summary>
+    public static MotionAction GetMainAction(int rawAction)
     {
-        if (AInputEvent_getType(ev) != EventType.Motion)
-            throw new InvalidOperationException("事件不是 Motion 类型");
-        int raw = AMotionEvent_getAction(ev);
-        return (MotionAction)(raw & MotionMask.Action);
+        return (MotionAction)(rawAction & ActionMask);
     }
 
-    /// <summary>获取触摸事件的指针索引（用于多点触控）</summary>
-    public static int GetPointerIndex(this IntPtr ev)
+    /// <summary>取出指针索引（多点触控时标识是第几根手指）</summary>
+    public static int GetPointerIndex(int rawAction)
     {
-        int raw = AMotionEvent_getAction(ev);
-        return (raw & MotionMask.PointerIndex) >> MotionMask.PointerIndexShift;
+        return (rawAction & ActionPointerIndexMask) >> ActionPointerIndexShift;
+    }
+
+    /// <summary>从原生事件句柄取出主动作，并验证事件类型。</summary>
+    public static MotionAction GetMainAction(nint motionEvent)
+    {
+        if (AInputEvent_getType(motionEvent) != EventType.Motion)
+            throw new InvalidOperationException("事件不是 Motion 类型");
+        return GetMainAction(AMotionEvent_getAction(motionEvent));
+    }
+
+    /// <summary>从原生事件句柄取出指针索引。</summary>
+    public static int GetPointerIndex(nint motionEvent)
+    {
+        return GetPointerIndex(AMotionEvent_getAction(motionEvent));
     }
 }

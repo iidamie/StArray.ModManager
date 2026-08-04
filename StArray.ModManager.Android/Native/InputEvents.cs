@@ -53,7 +53,6 @@ public static class InputEvents
     private static int s_touchTimestampSubscriberCount;
     private static bool s_faultLogged;
     private static readonly object s_dedupLock = new();
-    private static nint s_lastInputEvent;
     private static int s_lastRawAction;
     private static int s_lastPointerIndex;
     private static int s_lastPointerCount;
@@ -131,7 +130,6 @@ public static class InputEvents
                 : AndroidInput.AMotionEvent_getPointerId(inputEvent, pointerIndex);
 
             if (IsDuplicate(
-                    inputEvent,
                     rawAction,
                     pointerIndex,
                     pointerCount,
@@ -173,7 +171,6 @@ public static class InputEvents
     }
 
     private static bool IsDuplicate(
-        nint inputEvent,
         int rawAction,
         int pointerIndex,
         int pointerCount,
@@ -188,20 +185,22 @@ public static class InputEvents
         lock (s_dedupLock)
         {
             long elapsed = now - s_lastDispatchTicks;
-            bool sameNativeEvent = s_lastInputEvent == inputEvent;
             bool sameEventPayload = s_lastRawAction == rawAction
                 && s_lastPointerIndex == pointerIndex
                 && s_lastPointerCount == pointerCount
                 && s_lastPointerId == pointerId
                 && s_lastEventTimeNanos == eventTimeNanos;
-            bool duplicate = (sameNativeEvent || sameEventPayload)
+            // InputEvent objects are pooled by Android and their native address
+            // may be reused for the next high-KPS event. The address alone is
+            // therefore not an identity; require the complete hardware payload
+            // to match before suppressing a repeated dispatch.
+            bool duplicate = sameEventPayload
                 && elapsed >= 0L
                 && elapsed <= windowTicks;
 
             if (duplicate)
                 return true;
 
-            s_lastInputEvent = inputEvent;
             s_lastRawAction = rawAction;
             s_lastPointerIndex = pointerIndex;
             s_lastPointerCount = pointerCount;

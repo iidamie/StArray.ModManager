@@ -1,10 +1,8 @@
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using ImGuiNET;
 using StArray.ModManager.Android.Native;
 using StArray.ModManager.Hooks;
 using StArray.ModManager.Manager;
-using StArray.ModManager.Runtime;
 
 namespace StArray.ModManager.Android.UI;
 
@@ -68,33 +66,20 @@ public static partial class ImGuiInputHandler
         IsInitialized = true;
     }
 
-    /*
     /// <summary>触摸事件 Hook 回调</summary>
-    [NativeHook("libinput.so","_ZN7android13InputConsumer14consumeSamplesEPNS_26InputEventFactoryInterfaceERNS0_5BatchEmPjPPNS_10InputEventE")]
-    public unsafe static long OnConsumeSamples(void* thiz,void* factory, IntPtr batch,
-        ulong count, uint* outSeq, void** outEvent)
-    {
-        var result = OnConsumeSamplesOriginal(thiz,factory, batch, count, outSeq, outEvent);
-        if (IsInitialized && *outEvent != null) ImGuiImplAndroid.HandleInputEvent(new IntPtr(*outEvent));
-        return result;
-    }
-    
-    [NativeHook("libinput.so","_ZN7android13InputConsumer7consumeEPNS_26InputEventFactoryInterfaceEblPjPPNS_10InputEventE")]
-    public unsafe static long OnConsume(void* thiz, void* factory, bool consumeBatches, ulong frameTime, uint* outSeq, void** outEvent)
+    [NativeHook("libinput.so", "_ZN7android13InputConsumer7consumeEPNS_26InputEventFactoryInterfaceEblPjPPNS_10InputEventE",
+        Convention = CallingConvention.Cdecl)]
+    public unsafe static int OnConsume(
+        void* thiz,
+        void* factory,
+        bool consumeBatches,
+        long frameTime,
+        uint* outSeq,
+        void** outEvent)
     {
         var result = OnConsumeOriginal(thiz, factory, consumeBatches, frameTime, outSeq, outEvent);
-        if (IsInitialized && *outEvent != null) ImGuiImplAndroid.HandleInputEvent(new IntPtr(*outEvent));
-        return result;
-    }*/
-    
-    [NativeHook("GetInitializeMotionEventAddress")]
-    public unsafe static bool OnInitializeMotionEvent(
-        void* consumer,
-        void* @event,
-        void* message)
-    {
-        var result = OnInitializeMotionEventOriginal(consumer, @event, message);
-        DispatchInputEvent(new IntPtr(@event));
+        if (outEvent != null && *outEvent != null)
+            DispatchInputEvent(new IntPtr(*outEvent));
         return result;
     }
 
@@ -104,30 +89,12 @@ public static partial class ImGuiInputHandler
     /// <remarks>
     /// 两者的启用条件不同:ImGui 必须等上下文就绪(<see cref="IsInitialized"/>),
     /// 而订阅方(如异步输入 Mod)只要拿到硬件时间戳即可工作,与 ImGui 是否初始化无关。
+    /// 时间戳广播先执行,确保异步输入队列不会等待 ImGui backend 处理。
     /// </remarks>
     private static void DispatchInputEvent(IntPtr inputEvent)
     {
-        if (IsInitialized) ImGuiImplAndroid.HandleInputEvent(inputEvent);
         if (InputEvents.HasSubscribers) InputEvents.RaiseFrom(inputEvent);
-    }
-
-    private static nint GetInitializeMotionEventAddress()
-    {
-        NativeFuncResolver resolver = new("/system/lib64/libinput.so");
-        string sigHex = "e8 0f 19 fc fd 7b 01 a9 fc 6f 02 a9 fa 67 03 a9 " +
-                        "f8 5f 04 a9 f6 57 05 a9 f4 4f 06 a9 " +
-                        "fd 43 00 91 ?? ?? ?? ?? " +           // add x29, sp + sub sp (栈帧大小可变)
-                        "58 d0 3b d5 " +                       // mrs x24, tpidr_el0
-                        "?? ?? ?? ?? " +                       // ldr x8, [x24, #off]
-                        "?? ?? ?? ?? " +                       // stur x8, [x29, #off]
-                        "39 0c 40 b9 " +                       // ldr w25, [x1, #0xc]
-                        "?? ?? ?? ?? " +                       // cbz w25
-                        "37 f3 7d d3";                         // lsl x23, x25, #3
-
-        var addr = resolver.Resolve("_ZN7android13InputConsumer21initializeMotionEventEPNS_11MotionEventEPKNS_12InputMessageE",
-            NativeFuncResolver.ParseHexPattern(sigHex));
-        Logger.Error(nameof(ImGuiInputHandler), $"GetInitializeMotionEventAddress: {addr}");
-        return addr;
+        if (IsInitialized) ImGuiImplAndroid.HandleInputEvent(inputEvent);
     }
 
     private static JavaClass? s_utilsClass;

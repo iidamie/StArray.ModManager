@@ -34,7 +34,7 @@ public readonly record struct TouchTimestampInfo(
 /// <remarks>
 /// <para>
 /// 存在的意义：Dobby 拒绝在同一地址安装第二个 Hook（<c>Interceptor::find</c> 命中即返回 -1），
-/// 而 <c>InputConsumer::consume</c> / <c>consumeSamples</c> 已被 ImGui 输入处理占用。
+/// 而 <c>InputConsumer::consume</c> 已被 ImGui 输入处理占用。
 /// Mod 若想拿到触摸事件的内核时间戳，只能复用这里的广播，不能自行 Hook。
 /// </para>
 /// <para>

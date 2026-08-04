@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using StArray.ModManager.Manager;
 
 namespace StArray.ModManager.Android.Native;
@@ -51,6 +52,18 @@ public static class InputEvents
     private static int s_touchSubscriberCount;
     private static int s_touchTimestampSubscriberCount;
     private static bool s_faultLogged;
+    private static readonly object s_dedupLock = new();
+    private static nint s_lastInputEvent;
+    private static int s_lastRawAction;
+    private static int s_lastPointerIndex;
+    private static int s_lastPointerCount;
+    private static int s_lastPointerId;
+    private static long s_lastEventTimeNanos;
+    private static long s_lastDispatchTicks;
+
+    // Keep the single native ingress hook tolerant of runtimes that expose the
+    // same consumed AInputEvent through another dispatch path.
+    private const long DuplicateWindowMilliseconds = 8L;
 
     /// <summary>是否已有订阅者。用于在热路径上先做一次廉价短路，无人订阅时不读原生事件。</summary>
     public static bool HasSubscribers =>
@@ -111,6 +124,23 @@ public static class InputEvents
             int rawAction = AndroidInput.AMotionEvent_getAction(inputEvent);
             AndroidInput.MotionAction action = AndroidInput.GetMainAction(rawAction);
             int pointerIndex = AndroidInput.GetPointerIndex(rawAction);
+            int pointerCount = AndroidInput.AMotionEvent_getPointerCount(inputEvent);
+            long eventTimeNanos = AndroidInput.AMotionEvent_getEventTime(inputEvent);
+            int pointerId = action == AndroidInput.MotionAction.Cancel
+                ? -1
+                : AndroidInput.AMotionEvent_getPointerId(inputEvent, pointerIndex);
+
+            if (IsDuplicate(
+                    inputEvent,
+                    rawAction,
+                    pointerIndex,
+                    pointerCount,
+                    pointerId,
+                    eventTimeNanos))
+            {
+                return;
+            }
+
             bool timestampAction = action is AndroidInput.MotionAction.Down
                 or AndroidInput.MotionAction.PointerDown
                 or AndroidInput.MotionAction.Up
@@ -119,10 +149,6 @@ public static class InputEvents
 
             if (timestampHandlers != null && timestampAction)
             {
-                long eventTimeNanos = AndroidInput.AMotionEvent_getEventTime(inputEvent);
-                int pointerId = action == AndroidInput.MotionAction.Cancel
-                    ? -1
-                    : AndroidInput.AMotionEvent_getPointerId(inputEvent, pointerIndex);
                 DispatchTimestampHandlers(
                     timestampHandlers,
                     new TouchTimestampInfo(action, pointerId, eventTimeNanos));
@@ -134,10 +160,8 @@ public static class InputEvents
             TouchEventInfo info = new(
                 action,
                 pointerIndex,
-                action == AndroidInput.MotionAction.Cancel
-                    ? -1
-                    : AndroidInput.AMotionEvent_getPointerId(inputEvent, pointerIndex),
-                AndroidInput.AMotionEvent_getEventTime(inputEvent),
+                pointerId,
+                eventTimeNanos,
                 AndroidInput.AMotionEvent_getX(inputEvent, pointerIndex),
                 AndroidInput.AMotionEvent_getY(inputEvent, pointerIndex));
             DispatchTouchHandlers(handlers, info);
@@ -145,6 +169,46 @@ public static class InputEvents
         catch (Exception exception)
         {
             LogOnce($"Failed to read native input event: {exception}");
+        }
+    }
+
+    private static bool IsDuplicate(
+        nint inputEvent,
+        int rawAction,
+        int pointerIndex,
+        int pointerCount,
+        int pointerId,
+        long eventTimeNanos)
+    {
+        long now = Stopwatch.GetTimestamp();
+        long windowTicks = Math.Max(
+            1L,
+            Stopwatch.Frequency * DuplicateWindowMilliseconds / 1000L);
+
+        lock (s_dedupLock)
+        {
+            long elapsed = now - s_lastDispatchTicks;
+            bool sameNativeEvent = s_lastInputEvent == inputEvent;
+            bool sameEventPayload = s_lastRawAction == rawAction
+                && s_lastPointerIndex == pointerIndex
+                && s_lastPointerCount == pointerCount
+                && s_lastPointerId == pointerId
+                && s_lastEventTimeNanos == eventTimeNanos;
+            bool duplicate = (sameNativeEvent || sameEventPayload)
+                && elapsed >= 0L
+                && elapsed <= windowTicks;
+
+            if (duplicate)
+                return true;
+
+            s_lastInputEvent = inputEvent;
+            s_lastRawAction = rawAction;
+            s_lastPointerIndex = pointerIndex;
+            s_lastPointerCount = pointerCount;
+            s_lastPointerId = pointerId;
+            s_lastEventTimeNanos = eventTimeNanos;
+            s_lastDispatchTicks = now;
+            return false;
         }
     }
 

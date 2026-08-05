@@ -1,92 +1,266 @@
+using System.Diagnostics;
 using StArray.ModManager.Manager;
 
 namespace StArray.ModManager.Android.Native;
 
-/// <summary>一次触摸事件的快照。所有字段在广播时即已从原生事件读出，订阅方无需再碰原生指针。</summary>
+/// <summary>一次完整触摸事件的快照。所有字段在广播时即已从原生事件读出。</summary>
 /// <param name="Action">主动作，已去除指针索引</param>
-/// <param name="PointerIndex">指针索引（多点触控时标识第几根手指）</param>
-/// <param name="EventTimeNanos">事件发生时刻，纳秒，<c>CLOCK_MONOTONIC</c></param>
+/// <param name="PointerIndex">指针索引</param>
+/// <param name="PointerId">稳定的指针 ID，比索引更适合跨事件跟踪多指输入</param>
+/// <param name="EventTimeNanos">事件发生时刻，纳秒，时钟源为 CLOCK_MONOTONIC</param>
 /// <param name="X">触点 X 坐标（像素）</param>
 /// <param name="Y">触点 Y 坐标（像素）</param>
 public readonly record struct TouchEventInfo(
     AndroidInput.MotionAction Action,
     int PointerIndex,
+    int PointerId,
     long EventTimeNanos,
     float X,
-    float Y);
+    float Y)
+{
+    // Source compatibility for mods built against the first broadcast API.
+    public TouchEventInfo(
+        AndroidInput.MotionAction action,
+        int pointerIndex,
+        long eventTimeNanos,
+        float x,
+        float y)
+        : this(action, pointerIndex, -1, eventTimeNanos, x, y)
+    {
+    }
+}
 
 /// <summary>
-/// 输入事件广播点 —— 把 ModManager 已经装好的 <c>libinput.so</c> Hook 拿到的原始触摸事件
-/// 转发给需要硬件时间戳的 Mod。
+/// 只包含异步输入所需字段的原始触摸快照。
 /// </summary>
 /// <remarks>
-/// <para>
-/// 存在的意义：Dobby 拒绝在同一地址安装第二个 Hook（<c>Interceptor::find</c> 命中即返回 -1），
-/// 而 <c>InputConsumer::consume</c> / <c>consumeSamples</c> 已被 ImGui 输入处理占用。
-/// Mod 若想拿到触摸事件的内核时间戳，只能复用这里的广播，不能自行 Hook。
-/// </para>
-/// <para>
-/// <b>回调运行在 Android 输入分发线程，不是 Unity 主线程。</b>
-/// 订阅方必须足够廉价，且不得访问任何 Unity 对象 —— 只应把数据放进队列，留到主线程处理。
-/// </para>
+/// 该事件不读取坐标，且只广播 Down/Up/Cancel。高 KPS 时订阅方不需要为 Move
+/// 事件读取坐标或创建完整手势快照。
+/// </remarks>
+public readonly record struct TouchTimestampInfo(
+    AndroidInput.MotionAction Action,
+    int PointerId,
+    long EventTimeNanos);
+
+/// <summary>
+/// 输入事件广播点。原生输入 Hook 只负责解析一次事件，订阅方在自己的队列中异步处理。
+/// </summary>
+/// <remarks>
+/// 回调运行在 Android 输入分发线程，不是 Unity 主线程。订阅方只能做廉价的值类型快照
+/// 和入队操作，不能访问 Unity 对象或执行 IL2CPP 游戏逻辑。
 /// </remarks>
 public static class InputEvents
 {
     private const string LogTag = nameof(InputEvents);
-
-    /// <summary>是否已有订阅者。用于在热路径上先做一次廉价短路，无人订阅时不读原生事件。</summary>
-    public static bool HasSubscribers => s_onTouch != null;
+    private const long DuplicateWindowMilliseconds = 8L;
 
     private static Action<TouchEventInfo>? s_onTouch;
+    private static Action<TouchTimestampInfo>? s_onTouchTimestamp;
+    private static int s_touchSubscriberCount;
+    private static int s_touchTimestampSubscriberCount;
     private static bool s_faultLogged;
 
-    /// <summary>
-    /// 触摸事件抵达时广播（输入分发线程）。订阅方抛出的异常会被捕获并记录，不会影响其他订阅方或游戏本身。
-    /// </summary>
+    private static readonly object DedupLock = new();
+    private static int s_lastRawAction;
+    private static int s_lastPointerIndex;
+    private static int s_lastPointerCount;
+    private static int s_lastPointerId;
+    private static long s_lastEventTimeNanos;
+    private static long s_lastDispatchTicks;
+
+    /// <summary>是否已有任一类订阅者。</summary>
+    public static bool HasSubscribers =>
+        Volatile.Read(ref s_touchSubscriberCount) > 0
+        || Volatile.Read(ref s_touchTimestampSubscriberCount) > 0;
+
+    /// <summary>完整触摸事件广播，保留坐标和 Move 事件。</summary>
     public static event Action<TouchEventInfo>? OnTouch
     {
-        add => s_onTouch += value;
-        remove => s_onTouch -= value;
+        add
+        {
+            s_onTouch += value;
+            Interlocked.Increment(ref s_touchSubscriberCount);
+        }
+        remove
+        {
+            s_onTouch -= value;
+            Interlocked.Decrement(ref s_touchSubscriberCount);
+        }
     }
 
+    /// <summary>
+    /// 异步输入时间戳快速广播，只处理 Down、PointerDown、Up、PointerUp 和 Cancel。
+    /// </summary>
+    public static event Action<TouchTimestampInfo>? OnTouchTimestamp
+    {
+        add
+        {
+            s_onTouchTimestamp += value;
+            Interlocked.Increment(ref s_touchTimestampSubscriberCount);
+        }
+        remove
+        {
+            s_onTouchTimestamp -= value;
+            Interlocked.Decrement(ref s_touchTimestampSubscriberCount);
+        }
+    }
 
     /// <summary>
-    /// 从原生 <c>AInputEvent*</c> 解析并广播。
-    /// 由 ImGui 输入 Hook 在调用原函数之后立即调用。
-    /// 任何异常都在此吞掉 —— 此处位于原生调用栈上，异常逃逸会直接杀死输入系统。
+    /// 从原生 AInputEvent 解析并广播。输入事件只在这里读取一次，避免每个 Mod 重复访问
+    /// 原生对象；重复的同一事件只在广播层过滤一次。
     /// </summary>
     internal static void RaiseFrom(nint inputEvent)
     {
         Action<TouchEventInfo>? handlers = s_onTouch;
-        if (handlers == null || inputEvent == 0)
+        Action<TouchTimestampInfo>? timestampHandlers = s_onTouchTimestamp;
+        if ((handlers == null && timestampHandlers == null) || inputEvent == 0)
             return;
 
-        TouchEventInfo info;
         try
         {
             if (AndroidInput.AInputEvent_getType(inputEvent) != AndroidInput.EventType.Motion)
                 return;
 
             int rawAction = AndroidInput.AMotionEvent_getAction(inputEvent);
-            int pointerIndex =
-                (rawAction & AndroidInput.MotionMask.PointerIndex)
-                >> AndroidInput.MotionMask.PointerIndexShift;
-            var action = (AndroidInput.MotionAction)
-                (rawAction & AndroidInput.MotionMask.Action);
-            info = new TouchEventInfo(
+            AndroidInput.MotionAction action = AndroidInput.GetMainAction(rawAction);
+            int pointerIndex = AndroidInput.GetPointerIndex(rawAction);
+            bool timestampAction = action is AndroidInput.MotionAction.Down
+                or AndroidInput.MotionAction.PointerDown
+                or AndroidInput.MotionAction.Up
+                or AndroidInput.MotionAction.PointerUp
+                or AndroidInput.MotionAction.Cancel;
+
+            // AsyncInput subscribes only to the timestamp channel. Do not
+            // inspect Move coordinates, pointer IDs, or pointer counts on the
+            // hot path when no full-gesture subscriber exists.
+            if (!timestampAction && handlers == null)
+                return;
+
+            int pointerCount = AndroidInput.AMotionEvent_getPointerCount(inputEvent);
+            long eventTimeNanos = AndroidInput.AMotionEvent_getEventTime(inputEvent);
+            int pointerId = action == AndroidInput.MotionAction.Cancel
+                ? -1
+                : AndroidInput.AMotionEvent_getPointerId(inputEvent, pointerIndex);
+
+            if (IsDuplicate(
+                    rawAction,
+                    pointerIndex,
+                    pointerCount,
+                    pointerId,
+                    eventTimeNanos))
+            {
+                return;
+            }
+
+            if (timestampHandlers != null && timestampAction)
+            {
+                DispatchTimestampHandlers(
+                    timestampHandlers,
+                    new TouchTimestampInfo(action, pointerId, eventTimeNanos));
+            }
+
+            if (handlers == null)
+                return;
+
+            TouchEventInfo info = new(
                 action,
                 pointerIndex,
-                AndroidInput.AMotionEvent_getEventTime(inputEvent),
+                pointerId,
+                eventTimeNanos,
                 AndroidInput.AMotionEvent_getX(inputEvent, pointerIndex),
                 AndroidInput.AMotionEvent_getY(inputEvent, pointerIndex));
+            DispatchTouchHandlers(handlers, info);
         }
         catch (Exception exception)
         {
             LogOnce($"Failed to read native input event: {exception}");
+        }
+    }
+
+    private static bool IsDuplicate(
+        int rawAction,
+        int pointerIndex,
+        int pointerCount,
+        int pointerId,
+        long eventTimeNanos)
+    {
+        long now = Stopwatch.GetTimestamp();
+        long windowTicks = Math.Max(
+            1L,
+            Stopwatch.Frequency * DuplicateWindowMilliseconds / 1000L);
+
+        lock (DedupLock)
+        {
+            long elapsed = now - s_lastDispatchTicks;
+            bool sameEventPayload = s_lastRawAction == rawAction
+                && s_lastPointerIndex == pointerIndex
+                && s_lastPointerCount == pointerCount
+                && s_lastPointerId == pointerId
+                && s_lastEventTimeNanos == eventTimeNanos;
+            bool duplicate = sameEventPayload
+                && elapsed >= 0L
+                && elapsed <= windowTicks;
+
+            if (duplicate)
+                return true;
+
+            s_lastRawAction = rawAction;
+            s_lastPointerIndex = pointerIndex;
+            s_lastPointerCount = pointerCount;
+            s_lastPointerId = pointerId;
+            s_lastEventTimeNanos = eventTimeNanos;
+            s_lastDispatchTicks = now;
+            return false;
+        }
+    }
+
+    private static void DispatchTimestampHandlers(
+        Action<TouchTimestampInfo> handlers,
+        TouchTimestampInfo info)
+    {
+        if (Volatile.Read(ref s_touchTimestampSubscriberCount) == 1)
+        {
+            try
+            {
+                handlers(info);
+            }
+            catch (Exception exception)
+            {
+                LogOnce($"Touch timestamp subscriber threw: {exception}");
+            }
             return;
         }
 
-        // 逐个隔离：某个订阅方抛异常不应影响其余订阅方。
+        foreach (Delegate handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                ((Action<TouchTimestampInfo>)handler)(info);
+            }
+            catch (Exception exception)
+            {
+                LogOnce($"Touch timestamp subscriber threw: {exception}");
+            }
+        }
+    }
+
+    private static void DispatchTouchHandlers(
+        Action<TouchEventInfo> handlers,
+        TouchEventInfo info)
+    {
+        if (Volatile.Read(ref s_touchSubscriberCount) == 1)
+        {
+            try
+            {
+                handlers(info);
+            }
+            catch (Exception exception)
+            {
+                LogOnce($"Touch event subscriber threw: {exception}");
+            }
+            return;
+        }
+
         foreach (Delegate handler in handlers.GetInvocationList())
         {
             try
@@ -100,9 +274,6 @@ public static class InputEvents
         }
     }
 
-    /// <summary>
-    /// 只记录第一次故障。此处每帧可能被调用多次，持续写日志本身就会造成卡顿。
-    /// </summary>
     private static void LogOnce(string message)
     {
         if (s_faultLogged)
@@ -114,7 +285,7 @@ public static class InputEvents
         }
         catch
         {
-            // 日志系统本身不可用时只能放弃，绝不能让异常逃逸回原生调用栈。
+            // Never allow an exception to escape back through the native input stack.
         }
     }
 }

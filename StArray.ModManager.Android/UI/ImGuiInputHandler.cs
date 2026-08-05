@@ -91,10 +91,21 @@ public static partial class ImGuiInputHandler
     public unsafe static bool OnInitializeMotionEvent(void* @event, void* message)
     {
         var result = OnInitializeMotionEventOriginal(@event, message);
-        var x = AndroidInput.AMotionEvent_getX(new(@event), 0);
-        var y = AndroidInput.AMotionEvent_getY(new(@event), 0);
-        ImGuiImplAndroid.HandleInputEvent(new IntPtr(@event));
+        DispatchInputEvent(new IntPtr(@event));
         return result;
+    }
+
+    /// <summary>
+    /// 把一个原生输入事件同时送往 ImGui 和 <see cref="InputEvents"/> 订阅方。
+    /// </summary>
+    /// <remarks>
+    /// 两者的启用条件不同:ImGui 必须等上下文就绪(<see cref="IsInitialized"/>),
+    /// 而订阅方(如异步输入 Mod)只要拿到硬件时间戳即可工作,与 ImGui 是否初始化无关。
+    /// </remarks>
+    private static void DispatchInputEvent(IntPtr inputEvent)
+    {
+        if (IsInitialized) ImGuiImplAndroid.HandleInputEvent(inputEvent);
+        if (InputEvents.HasSubscribers) InputEvents.RaiseFrom(inputEvent);
     }
 
     private static nint GetInitializeMotionEventAddress()

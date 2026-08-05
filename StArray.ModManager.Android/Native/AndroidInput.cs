@@ -156,6 +156,19 @@ public static class AndroidInput
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     public static extern int AMotionEvent_getPointerId(IntPtr ev, int pointerIndex);
 
+    /// <summary>
+    /// 事件发生时刻,单位纳秒,时钟源为 <c>CLOCK_MONOTONIC</c>。
+    /// 这是输入事件由内核打上的硬件时间戳,早于并独立于渲染帧,
+    /// 因此可用来还原「按下的真实时刻」而不受帧率采样影响。
+    /// 对应 NDK <c>AMotionEvent_getEventTime</c>(android/input.h:1174)。
+    /// </summary>
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    public static extern long AMotionEvent_getEventTime(IntPtr ev);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    public static extern long AMotionEvent_getDownTime(IntPtr ev);
+
+
     // ======================== 辅助方法（扩展风格） ========================
 
     /// <summary>获取触摸事件的主动作（去除指针索引）</summary>

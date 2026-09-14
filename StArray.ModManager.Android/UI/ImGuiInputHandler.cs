@@ -4,6 +4,7 @@ using ImGuiNET;
 using StArray.ModManager.Android.Native;
 using StArray.ModManager.Hooks;
 using StArray.ModManager.Manager;
+using StArray.ModManager.Native;
 using StArray.ModManager.Runtime;
 
 namespace StArray.ModManager.Android.UI;
@@ -16,6 +17,7 @@ public static partial class ImGuiInputHandler
     
 
     private static bool s_wantTextInputLast;
+    private static nint s_keyInputLibraryHandle;
 
     /// <summary>
     /// 安装触摸事件和按键事件 Hook
@@ -131,6 +133,39 @@ public static partial class ImGuiInputHandler
 
             resolver.Load();
             return resolver.GetFuncPtr(rva);
+        }
+
+        // Some Android system images strip InputConsumer symbols from the ELF
+        // symbol table while dlsym can still resolve the loaded symbol. Use a
+        // real dlopen handle here; NativeFuncResolver intentionally returns a
+        // mapped base address and that value is not valid for dlsym/dlclose.
+        string[] libraries =
+        {
+            "/system/lib64/libinput.so",
+            "libinput.so",
+        };
+        foreach (string library in libraries)
+        {
+            nint handle = DL.OpenHandle(
+                library,
+                DL.RTLDFlags.RTLD_NOW | DL.RTLDFlags.RTLD_NOLOAD);
+            if (handle == nint.Zero)
+                continue;
+
+            foreach (string symbol in symbols)
+            {
+                nint address = DL.Symbol(handle, symbol);
+                if (address == nint.Zero)
+                    continue;
+
+                // Keep the valid handle alive for the lifetime of the process;
+                // closing it can crash the Android linker on this device.
+                s_keyInputLibraryHandle = handle;
+                Logger.Info(
+                    nameof(ImGuiInputHandler),
+                    $"Resolved initializeKeyEvent through dlsym: {symbol}");
+                return address;
+            }
         }
 
         throw new KeyNotFoundException("InputConsumer.initializeKeyEvent was not found.");

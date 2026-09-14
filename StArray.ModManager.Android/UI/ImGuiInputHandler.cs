@@ -17,7 +17,7 @@ public static partial class ImGuiInputHandler
     
 
     private static bool s_wantTextInputLast;
-    private static nint s_keyInputLibraryHandle;
+    private static nint s_inputLibraryHandle;
 
     /// <summary>
     /// 安装触摸事件和按键事件 Hook
@@ -102,43 +102,35 @@ public static partial class ImGuiInputHandler
     }
 
     /// <summary>
-    /// 独立的 Android 按键事件广播 Hook。现有触摸 Hook 保持不变；该 Hook 只把原始按键
-    /// 交给 InputEvents，避免各 Mod 自己重复接入 libinput。
+    /// 在 InputConsumer.consume 返回完整 AInputEvent 后广播。部分 Android 版本会
+    /// 裁剪 initializeKeyEvent 的符号，但 consume 仍保留并同时覆盖触摸和按键事件。
+    /// 现有 initializeMotionEvent Hook 保持不变；Motion 重复广播由 InputEvents 去重。
     /// </summary>
-    [NativeHook("GetInitializeKeyEventAddress")]
-    public unsafe static void OnInitializeKeyEvent(
+    [NativeHook("GetConsumeInputEventAddress", Convention = CallingConvention.Cdecl)]
+    public unsafe static int OnConsumeInputEvent(
         void* consumer,
-        void* @event,
-        void* message)
+        void* factory,
+        byte consumeBatches,
+        long frameTime,
+        uint* outSeq,
+        void** outEvent)
     {
-        OnInitializeKeyEventOriginal(consumer, @event, message);
-        if (InputEvents.HasSubscribers)
-            InputEvents.RaiseFrom(new IntPtr(@event));
+        int result = OnConsumeInputEventOriginal(
+            consumer,
+            factory,
+            consumeBatches,
+            frameTime,
+            outSeq,
+            outEvent);
+        if (InputEvents.HasSubscribers && outEvent != null && *outEvent != null)
+            InputEvents.RaiseFrom(new IntPtr(*outEvent));
+        return result;
     }
 
-    private static nint GetInitializeKeyEventAddress()
+    private static nint GetConsumeInputEventAddress()
     {
-        var resolver = new NativeFuncResolver("/system/lib64/libinput.so");
-        string[] symbols =
-        {
-            "_ZN7android13InputConsumer18initializeKeyEventEPNS_8KeyEventEPKNS_12InputMessageE",
-            "_ZN7android13InputConsumer17initializeKeyEventEPNS_8KeyEventEPKNS_12InputMessageE",
-        };
-
-        foreach (string symbol in symbols)
-        {
-            long rva = resolver.FindSymbolRva(symbol);
-            if (rva < 0)
-                continue;
-
-            resolver.Load();
-            return resolver.GetFuncPtr(rva);
-        }
-
-        // Some Android system images strip InputConsumer symbols from the ELF
-        // symbol table while dlsym can still resolve the loaded symbol. Use a
-        // real dlopen handle here; NativeFuncResolver intentionally returns a
-        // mapped base address and that value is not valid for dlsym/dlclose.
+        const string symbol =
+            "_ZN7android13InputConsumer7consumeEPNS_26InputEventFactoryInterfaceEblPjPPNS_10InputEventE";
         string[] libraries =
         {
             "/system/lib64/libinput.so",
@@ -152,23 +144,20 @@ public static partial class ImGuiInputHandler
             if (handle == nint.Zero)
                 continue;
 
-            foreach (string symbol in symbols)
-            {
-                nint address = DL.Symbol(handle, symbol);
-                if (address == nint.Zero)
-                    continue;
+            nint address = DL.Symbol(handle, symbol);
+            if (address == nint.Zero)
+                continue;
 
-                // Keep the valid handle alive for the lifetime of the process;
-                // closing it can crash the Android linker on this device.
-                s_keyInputLibraryHandle = handle;
-                Logger.Info(
-                    nameof(ImGuiInputHandler),
-                    $"Resolved initializeKeyEvent through dlsym: {symbol}");
-                return address;
-            }
+            // Keep the valid handle alive for the lifetime of the process;
+            // closing it can crash the Android linker on this device.
+            s_inputLibraryHandle = handle;
+            Logger.Info(
+                nameof(ImGuiInputHandler),
+                "Resolved InputConsumer.consume through dlsym");
+            return address;
         }
 
-        throw new KeyNotFoundException("InputConsumer.initializeKeyEvent was not found.");
+        throw new KeyNotFoundException("InputConsumer.consume was not found.");
     }
 
     private static nint GetInitializeMotionEventAddress()

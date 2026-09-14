@@ -102,35 +102,68 @@ public static partial class ImGuiInputHandler
     }
 
     /// <summary>
-    /// 在 Android NDK AInputQueue_getEvent 返回完整 AInputEvent 后广播。
-    /// 该导出函数不依赖 libinput 的私有符号，能够覆盖被裁剪的 key event 路径；
-    /// 现有 initializeMotionEvent Hook 保持不变，重复 Motion 由 InputEvents 去重。
+    /// 在 InputConsumer.consume 返回完整 AInputEvent 后广播。当前设备的 libinput
+    /// 保留该符号，而 initializeKeyEvent 已被裁剪；现有 initializeMotionEvent Hook
+    /// 保持不变，重复 Motion 由 InputEvents 去重。
     /// </summary>
-    [NativeHook("GetAInputQueueGetEventAddress", Convention = CallingConvention.Cdecl)]
-    public unsafe static int OnAInputQueueGetEvent(void* queue, void** outEvent)
+    [NativeHook("GetConsumeInputEventAddress", Convention = CallingConvention.Cdecl)]
+    public unsafe static int OnConsumeInputEvent(
+        void* consumer,
+        void* factory,
+        byte consumeBatches,
+        long frameTime,
+        uint* outSeq,
+        void** outEvent)
     {
-        int result = OnAInputQueueGetEventOriginal(queue, outEvent);
-        if (result >= 0 && InputEvents.HasSubscribers
-            && outEvent != null && *outEvent != null)
+        int result = OnConsumeInputEventOriginal(
+            consumer,
+            factory,
+            consumeBatches,
+            frameTime,
+            outSeq,
+            outEvent);
+        if (InputEvents.HasSubscribers && outEvent != null && *outEvent != null)
         {
             InputEvents.RaiseFrom(new IntPtr(*outEvent));
         }
         return result;
     }
 
-    private static nint GetAInputQueueGetEventAddress()
+    private static nint GetConsumeInputEventAddress()
     {
-        const string symbol = "AInputQueue_getEvent";
+        const string symbol =
+            "_ZN7android13InputConsumer7consumeEPNS_26InputEventFactoryInterfaceEblPjPPNS_10InputEventE";
+
+        var resolver = new NativeFuncResolver("/system/lib64/libinput.so");
+        long rva = resolver.FindSymbolRva(symbol);
+        if (rva >= 0)
+        {
+            resolver.Load();
+            nint address = resolver.GetFuncPtr(rva);
+            Logger.Info(nameof(ImGuiInputHandler),
+                $"Resolved InputConsumer.consume through ELF symbol at 0x{rva:X}");
+            return address;
+        }
+
         string[] libraries =
         {
-            "/system/lib64/libandroid.so",
-            "libandroid.so",
+            "/system/lib64/libinput.so",
+            "libinput.so",
         };
         foreach (string library in libraries)
         {
             nint handle = DL.OpenHandle(
                 library,
                 DL.RTLDFlags.RTLD_NOW | DL.RTLDFlags.RTLD_NOLOAD);
+            if (handle == nint.Zero)
+            {
+                // The library may be mapped by the framework without a
+                // reusable NOLOAD handle. Loading one owned handle is safe;
+                // it is intentionally retained until process exit.
+                handle = DL.OpenHandle(
+                    library,
+                    DL.RTLDFlags.RTLD_NOW | DL.RTLDFlags.RTLD_LOCAL);
+            }
             if (handle == nint.Zero)
                 continue;
 
@@ -143,11 +176,11 @@ public static partial class ImGuiInputHandler
             s_inputLibraryHandle = handle;
             Logger.Info(
                 nameof(ImGuiInputHandler),
-                "Resolved AInputQueue_getEvent through dlsym");
+                "Resolved InputConsumer.consume through dlsym");
             return address;
         }
 
-        throw new KeyNotFoundException("AInputQueue_getEvent was not found.");
+        throw new KeyNotFoundException("InputConsumer.consume was not found.");
     }
 
     private static nint GetInitializeMotionEventAddress()

@@ -34,14 +34,6 @@ public static class DL
         return dl_open(fileName, rtldFlags);
     }
 
-    /// <summary>
-    /// 直接取得 dlopen 句柄。与 <see cref="Open"/> 不同，这里绝不返回映像基址，
-    /// 因此返回值可以安全传给 <see cref="Symbol"/>。调用方应持有该句柄到进程结束，
-    /// 不要把它当作映像基址或交给错误的 dlclose 路径。
-    /// </summary>
-    public static IntPtr OpenHandle(string fileName, RTLDFlags rtldFlags)
-        => dl_open(fileName, rtldFlags);
-
     public static IntPtr Symbol(IntPtr handle, string symbol) =>
         dl_sym(handle, symbol);
 

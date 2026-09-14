@@ -4,7 +4,6 @@ using ImGuiNET;
 using StArray.ModManager.Android.Native;
 using StArray.ModManager.Hooks;
 using StArray.ModManager.Manager;
-using StArray.ModManager.Native;
 using StArray.ModManager.Runtime;
 
 namespace StArray.ModManager.Android.UI;
@@ -17,7 +16,6 @@ public static partial class ImGuiInputHandler
     
 
     private static bool s_wantTextInputLast;
-    private static nint s_inputLibraryHandle;
 
     /// <summary>
     /// 安装触摸事件和按键事件 Hook
@@ -102,85 +100,59 @@ public static partial class ImGuiInputHandler
     }
 
     /// <summary>
-    /// 在 InputConsumer.consume 返回完整 AInputEvent 后广播。当前设备的 libinput
-    /// 保留该符号，而 initializeKeyEvent 已被裁剪；现有 initializeMotionEvent Hook
-    /// 保持不变，重复 Motion 由 InputEvents 去重。
+    /// KeyEvent.initialize 是当前 Android libinput 中实际保留的按键初始化入口。
+    /// 它与 initializeMotionEvent 一样，在事件字段完整写入后再广播原生事件快照。
     /// </summary>
-    [NativeHook("GetConsumeInputEventAddress", Convention = CallingConvention.Cdecl)]
-    public unsafe static int OnConsumeInputEvent(
-        void* consumer,
-        void* factory,
-        byte consumeBatches,
-        long frameTime,
-        uint* outSeq,
-        void** outEvent)
+    [NativeHook("GetInitializeKeyEventAddress")]
+    public unsafe static void OnInitializeKeyEvent(
+        void* keyEvent,
+        int deviceId,
+        int source,
+        uint action,
+        int displayId,
+        byte* hmac,
+        int flags,
+        int keyCode,
+        int scanCode,
+        int metaState,
+        int repeatCount,
+        int reserved,
+        long downTimeNanos,
+        long eventTimeNanos)
     {
-        int result = OnConsumeInputEventOriginal(
-            consumer,
-            factory,
-            consumeBatches,
-            frameTime,
-            outSeq,
-            outEvent);
-        if (InputEvents.HasSubscribers && outEvent != null && *outEvent != null)
-        {
-            InputEvents.RaiseFrom(new IntPtr(*outEvent));
-        }
-        return result;
+        OnInitializeKeyEventOriginal(
+            keyEvent,
+            deviceId,
+            source,
+            action,
+            displayId,
+            hmac,
+            flags,
+            keyCode,
+            scanCode,
+            metaState,
+            repeatCount,
+            reserved,
+            downTimeNanos,
+            eventTimeNanos);
+        if (InputEvents.HasSubscribers && keyEvent != null)
+            InputEvents.RaiseFrom(new IntPtr(keyEvent));
     }
 
-    private static nint GetConsumeInputEventAddress()
+    private static nint GetInitializeKeyEventAddress()
     {
         const string symbol =
-            "_ZN7android13InputConsumer7consumeEPNS_26InputEventFactoryInterfaceEblPjPPNS_10InputEventE";
+            "_ZN7android8KeyEvent10initializeEiijNS_2ui16LogicalDisplayIdENSt3__15arrayIhLm32EEEiiiiiill";
 
         var resolver = new NativeFuncResolver("/system/lib64/libinput.so");
         long rva = resolver.FindSymbolRva(symbol);
-        if (rva >= 0)
-        {
-            resolver.Load();
-            nint address = resolver.GetFuncPtr(rva);
-            Logger.Info(nameof(ImGuiInputHandler),
-                $"Resolved InputConsumer.consume through ELF symbol at 0x{rva:X}");
-            return address;
-        }
+        if (rva < 0)
+            throw new KeyNotFoundException("KeyEvent.initialize was not found.");
 
-        string[] libraries =
-        {
-            "/system/lib64/libinput.so",
-            "libinput.so",
-        };
-        foreach (string library in libraries)
-        {
-            nint handle = DL.OpenHandle(
-                library,
-                DL.RTLDFlags.RTLD_NOW | DL.RTLDFlags.RTLD_NOLOAD);
-            if (handle == nint.Zero)
-            {
-                // The library may be mapped by the framework without a
-                // reusable NOLOAD handle. Loading one owned handle is safe;
-                // it is intentionally retained until process exit.
-                handle = DL.OpenHandle(
-                    library,
-                    DL.RTLDFlags.RTLD_NOW | DL.RTLDFlags.RTLD_LOCAL);
-            }
-            if (handle == nint.Zero)
-                continue;
-
-            nint address = DL.Symbol(handle, symbol);
-            if (address == nint.Zero)
-                continue;
-
-            // Keep the valid handle alive for the lifetime of the process;
-            // closing it can crash the Android linker on this device.
-            s_inputLibraryHandle = handle;
-            Logger.Info(
-                nameof(ImGuiInputHandler),
-                "Resolved InputConsumer.consume through dlsym");
-            return address;
-        }
-
-        throw new KeyNotFoundException("InputConsumer.consume was not found.");
+        resolver.Load();
+        Logger.Info(nameof(ImGuiInputHandler),
+            $"Resolved KeyEvent.initialize through ELF symbol at 0x{rva:X}");
+        return resolver.GetFuncPtr(rva);
     }
 
     private static nint GetInitializeMotionEventAddress()

@@ -43,6 +43,17 @@ public readonly record struct TouchTimestampInfo(
     long EventTimeNanos);
 
 /// <summary>
+/// Android 原始按键事件快照。事件在输入线程解析完成后才广播，订阅方不应保存原生句柄。
+/// </summary>
+public readonly record struct KeyEventInfo(
+    AndroidInput.KeyAction Action,
+    int KeyCode,
+    AndroidInput.MetaState MetaState,
+    int RepeatCount,
+    long EventTimeNanos,
+    long DownTimeNanos);
+
+/// <summary>
 /// 输入事件广播点。原生输入 Hook 只负责解析一次事件，订阅方在自己的队列中异步处理。
 /// </summary>
 /// <remarks>
@@ -56,8 +67,10 @@ public static class InputEvents
 
     private static Action<TouchEventInfo>? s_onTouch;
     private static Action<TouchTimestampInfo>? s_onTouchTimestamp;
+    private static Action<KeyEventInfo>? s_onKey;
     private static int s_touchSubscriberCount;
     private static int s_touchTimestampSubscriberCount;
+    private static int s_keySubscriberCount;
     private static int s_faultLogged;
 
     private static readonly object DedupLock = new();
@@ -71,7 +84,8 @@ public static class InputEvents
     /// <summary>是否已有任一类订阅者。</summary>
     public static bool HasSubscribers =>
         Volatile.Read(ref s_touchSubscriberCount) > 0
-        || Volatile.Read(ref s_touchTimestampSubscriberCount) > 0;
+        || Volatile.Read(ref s_touchTimestampSubscriberCount) > 0
+        || Volatile.Read(ref s_keySubscriberCount) > 0;
 
     /// <summary>完整触摸事件广播，保留坐标和 Move 事件。</summary>
     public static event Action<TouchEventInfo>? OnTouch
@@ -122,6 +136,32 @@ public static class InputEvents
     }
 
     /// <summary>
+    /// 原始 Android 键盘/控制器按键广播。回调运行在 Android 输入分发线程，事件已带有
+    /// CLOCK_MONOTONIC 时间戳；订阅方应立即复制或入队，不得访问 Unity 对象。
+    /// </summary>
+    public static event Action<KeyEventInfo>? OnKey
+    {
+        add
+        {
+            if (value == null) return;
+            lock (DedupLock)
+            {
+                s_onKey += value;
+                Interlocked.Increment(ref s_keySubscriberCount);
+            }
+        }
+        remove
+        {
+            if (value == null) return;
+            lock (DedupLock)
+            {
+                s_onKey -= value;
+                Interlocked.Decrement(ref s_keySubscriberCount);
+            }
+        }
+    }
+
+    /// <summary>
     /// 从原生 AInputEvent 解析并广播。输入事件只在这里读取一次，避免每个 Mod 重复访问
     /// 原生对象；重复的同一事件只在广播层过滤一次。
     /// </summary>
@@ -129,18 +169,38 @@ public static class InputEvents
     {
         Action<TouchEventInfo>? handlers;
         Action<TouchTimestampInfo>? timestampHandlers;
+        Action<KeyEventInfo>? keyHandlers;
         lock (DedupLock)
         {
             handlers = s_onTouch;
             timestampHandlers = s_onTouchTimestamp;
+            keyHandlers = s_onKey;
         }
 
-        if ((handlers == null && timestampHandlers == null) || inputEvent == 0)
+        if ((handlers == null && timestampHandlers == null && keyHandlers == null)
+            || inputEvent == 0)
             return;
 
         try
         {
-            if (AndroidInput.AInputEvent_getType(inputEvent) != AndroidInput.EventType.Motion)
+            AndroidInput.EventType eventType = AndroidInput.AInputEvent_getType(inputEvent);
+            if (eventType == AndroidInput.EventType.Key)
+            {
+                if (keyHandlers == null)
+                    return;
+
+                KeyEventInfo keyInfo = new(
+                    AndroidInput.AKeyEvent_getAction(inputEvent),
+                    AndroidInput.AKeyEvent_getKeyCode(inputEvent),
+                    AndroidInput.AKeyEvent_getMetaState(inputEvent),
+                    AndroidInput.AKeyEvent_getRepeatCount(inputEvent),
+                    AndroidInput.AKeyEvent_getEventTime(inputEvent),
+                    AndroidInput.AKeyEvent_getDownTime(inputEvent));
+                DispatchKeyHandlers(keyHandlers, keyInfo);
+                return;
+            }
+
+            if (eventType != AndroidInput.EventType.Motion)
                 return;
 
             int rawAction = AndroidInput.AMotionEvent_getAction(inputEvent);
@@ -290,6 +350,36 @@ public static class InputEvents
             catch (Exception exception)
             {
                 LogOnce($"Touch event subscriber threw: {exception}");
+            }
+        }
+    }
+
+    private static void DispatchKeyHandlers(
+        Action<KeyEventInfo> handlers,
+        KeyEventInfo info)
+    {
+        if (Volatile.Read(ref s_keySubscriberCount) == 1)
+        {
+            try
+            {
+                handlers(info);
+            }
+            catch (Exception exception)
+            {
+                LogOnce($"Key event subscriber threw: {exception}");
+            }
+            return;
+        }
+
+        foreach (Delegate handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                ((Action<KeyEventInfo>)handler)(info);
+            }
+            catch (Exception exception)
+            {
+                LogOnce($"Key event subscriber threw: {exception}");
             }
         }
     }

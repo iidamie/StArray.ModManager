@@ -149,6 +149,15 @@ public static class AndroidInput
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     public static extern int AKeyEvent_getRepeatCount(IntPtr ev);
 
+    /// <summary>
+    /// 按键事件发生时刻，单位纳秒，时钟源为 <c>CLOCK_MONOTONIC</c>。
+    /// </summary>
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    public static extern long AKeyEvent_getEventTime(IntPtr ev);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    public static extern long AKeyEvent_getDownTime(IntPtr ev);
+
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     public static extern int AMotionEvent_getAction(IntPtr ev);
 

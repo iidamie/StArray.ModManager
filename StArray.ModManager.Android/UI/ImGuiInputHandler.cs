@@ -99,6 +99,41 @@ public static partial class ImGuiInputHandler
         return result;
     }
 
+    /// <summary>
+    /// 独立的 Android 按键事件广播 Hook。现有触摸 Hook 保持不变；该 Hook 只把原始按键
+    /// 交给 InputEvents，避免各 Mod 自己重复接入 libinput。
+    /// </summary>
+    [NativeHook("GetInitializeKeyEventAddress")]
+    public unsafe static bool OnInitializeKeyEvent(void* @event, void* message)
+    {
+        var result = OnInitializeKeyEventOriginal(@event, message);
+        if (InputEvents.HasSubscribers)
+            InputEvents.RaiseFrom(new IntPtr(@event));
+        return result;
+    }
+
+    private static nint GetInitializeKeyEventAddress()
+    {
+        var resolver = new NativeFuncResolver("/system/lib64/libinput.so");
+        string[] symbols =
+        {
+            "_ZN7android13InputConsumer18initializeKeyEventEPNS_8KeyEventEPKNS_12InputMessageE",
+            "_ZN7android13InputConsumer17initializeKeyEventEPNS_8KeyEventEPKNS_12InputMessageE",
+        };
+
+        foreach (string symbol in symbols)
+        {
+            long rva = resolver.FindSymbolRva(symbol);
+            if (rva >= 0)
+            {
+                resolver.Load();
+                return resolver.GetFuncPtr(rva);
+            }
+        }
+
+        throw new KeyNotFoundException("InputConsumer.initializeKeyEvent was not found.");
+    }
+
     private static nint GetInitializeMotionEventAddress()
     {
         byte?[] sig = NativeFuncResolver.ParseHexPattern(

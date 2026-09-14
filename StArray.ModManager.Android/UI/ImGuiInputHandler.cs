@@ -102,39 +102,29 @@ public static partial class ImGuiInputHandler
     }
 
     /// <summary>
-    /// 在 InputConsumer.consume 返回完整 AInputEvent 后广播。部分 Android 版本会
-    /// 裁剪 initializeKeyEvent 的符号，但 consume 仍保留并同时覆盖触摸和按键事件。
-    /// 现有 initializeMotionEvent Hook 保持不变；Motion 重复广播由 InputEvents 去重。
+    /// 在 Android NDK AInputQueue_getEvent 返回完整 AInputEvent 后广播。
+    /// 该导出函数不依赖 libinput 的私有符号，能够覆盖被裁剪的 key event 路径；
+    /// 现有 initializeMotionEvent Hook 保持不变，重复 Motion 由 InputEvents 去重。
     /// </summary>
-    [NativeHook("GetConsumeInputEventAddress", Convention = CallingConvention.Cdecl)]
-    public unsafe static int OnConsumeInputEvent(
-        void* consumer,
-        void* factory,
-        byte consumeBatches,
-        long frameTime,
-        uint* outSeq,
-        void** outEvent)
+    [NativeHook("GetAInputQueueGetEventAddress", Convention = CallingConvention.Cdecl)]
+    public unsafe static int OnAInputQueueGetEvent(void* queue, void** outEvent)
     {
-        int result = OnConsumeInputEventOriginal(
-            consumer,
-            factory,
-            consumeBatches,
-            frameTime,
-            outSeq,
-            outEvent);
-        if (InputEvents.HasSubscribers && outEvent != null && *outEvent != null)
+        int result = OnAInputQueueGetEventOriginal(queue, outEvent);
+        if (result >= 0 && InputEvents.HasSubscribers
+            && outEvent != null && *outEvent != null)
+        {
             InputEvents.RaiseFrom(new IntPtr(*outEvent));
+        }
         return result;
     }
 
-    private static nint GetConsumeInputEventAddress()
+    private static nint GetAInputQueueGetEventAddress()
     {
-        const string symbol =
-            "_ZN7android13InputConsumer7consumeEPNS_26InputEventFactoryInterfaceEblPjPPNS_10InputEventE";
+        const string symbol = "AInputQueue_getEvent";
         string[] libraries =
         {
-            "/system/lib64/libinput.so",
-            "libinput.so",
+            "/system/lib64/libandroid.so",
+            "libandroid.so",
         };
         foreach (string library in libraries)
         {
@@ -153,11 +143,11 @@ public static partial class ImGuiInputHandler
             s_inputLibraryHandle = handle;
             Logger.Info(
                 nameof(ImGuiInputHandler),
-                "Resolved InputConsumer.consume through dlsym");
+                "Resolved AInputQueue_getEvent through dlsym");
             return address;
         }
 
-        throw new KeyNotFoundException("InputConsumer.consume was not found.");
+        throw new KeyNotFoundException("AInputQueue_getEvent was not found.");
     }
 
     private static nint GetInitializeMotionEventAddress()

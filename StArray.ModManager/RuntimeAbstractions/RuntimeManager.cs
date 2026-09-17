@@ -148,12 +148,11 @@ public static class RuntimeManager
     internal const int RtldNoLoad = 0x0004;
 
     private static bool IsUnixLibraryLoaded(string filename)
-        // DL.Open intentionally returns the mapped base address when a library
-        // is already loaded. That value is suitable for RVA arithmetic, but it
-        // is not a dlopen handle and must never be passed to dlclose. Runtime
-        // detection only needs a presence check, so inspect the loaded-image
-        // maps directly and avoid changing linker reference counts.
-        => DL.GetBaseAddress(filename) != IntPtr.Zero;
+        => ProbeUnixLibrary(
+            filename,
+            (name, flags) => DL.Open(
+                name, (DL.RTLDFlags)(flags)), // ProbeUnixLibrary 只传 NOW|NOLOAD，直接透传
+            handle => _ = DL.Close(handle));
 
     internal static bool ProbeUnixLibrary(
         string filename,

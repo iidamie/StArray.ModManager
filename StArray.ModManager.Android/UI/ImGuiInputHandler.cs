@@ -91,12 +91,28 @@ public static partial class ImGuiInputHandler
     public unsafe static bool OnInitializeMotionEvent(void* @event, void* message)
     {
         var result = OnInitializeMotionEventOriginal(@event, message);
-        var x = AndroidInput.AMotionEvent_getX(new(@event), 0);
-        var y = AndroidInput.AMotionEvent_getY(new(@event), 0);
+        var inputEvent = new IntPtr(@event);
+
         if (InputEvents.HasSubscribers)
-            InputEvents.RaiseFrom(new IntPtr(@event));
-        ImGuiImplAndroid.HandleInputEvent(new IntPtr(@event));
-        return result;
+            InputEvents.RaiseFrom(inputEvent);
+
+        if (IsInitialized)
+            ImGuiImplAndroid.HandleInputEvent(inputEvent);
+
+        return result || IsCapturedByImGui(inputEvent);
+    }
+
+    private static bool IsCapturedByImGui(IntPtr inputEvent)
+    {
+        if (!IsInitialized || inputEvent == IntPtr.Zero)
+            return false;
+
+        return AndroidInput.AInputEvent_getType(inputEvent) switch
+        {
+            AndroidInput.EventType.Motion => ImGui.GetIO().WantCaptureMouse,
+            AndroidInput.EventType.Key => ImGui.GetIO().WantCaptureKeyboard,
+            _ => false,
+        };
     }
 
     private static nint GetInitializeMotionEventAddress()

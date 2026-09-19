@@ -86,9 +86,10 @@ public static class Managed
         HookHelper.Instance = new MinHook();
         ModManagerUI modManagerUI = new(new ModLoader(modsPath), DllParentPath);
 
-        NativeApi.SetBackend(1); // D3D11
-        ImGuiDXRenderer.OnRender += modManagerUI.Render;
-        ImGuiDXRenderer.Install();
+        // Keep graphics and input interception in managed code so ImGui's
+        // capture flags can stop overlay input from reaching the game.
+        D3D11Renderer.OnRender += modManagerUI.Render;
+        D3D11Renderer.Install();
 
         totalSw.Stop();
         Logger.Info($"{nameof(Managed)}-Benchmark", $"=== Startup total: {totalSw.Elapsed.TotalSeconds:F3}s ===");

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Threading;
 using ImGuiNET;
 using StArray.ModManager.Android.Native;
 using StArray.ModManager.Hooks;
@@ -15,6 +16,18 @@ public static partial class ImGuiInputHandler
     
 
     private static bool s_wantTextInputLast;
+    private const int StatusOk = 0;
+    private const int StatusWouldBlock = -11; // -EAGAIN / WOULD_BLOCK
+    private const string SendFinishedSignalSymbol =
+        "_ZN7android13InputConsumer18sendFinishedSignalEjb";
+
+    private static readonly object s_finishedSignalLock = new();
+    private static SendFinishedSignalDelegate? s_sendFinishedSignal;
+    private static bool s_finishedSignalResolutionAttempted;
+    private static int s_captureTouchSequence;
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int SendFinishedSignalDelegate(nint consumer, uint sequence, byte handled);
 
     /// <summary>
     /// 安装触摸事件和按键事件 Hook
@@ -83,7 +96,7 @@ public static partial class ImGuiInputHandler
         var result = OnConsumeOriginal(
             thiz, factory, consumeBatches, frameTime, outSeq, outEvent);
 
-        if (outEvent == null || *outEvent == null)
+        if (result != StatusOk || outEvent == null || *outEvent == null)
             return result;
 
         var inputEvent = new IntPtr(*outEvent);
@@ -91,9 +104,100 @@ public static partial class ImGuiInputHandler
             InputEvents.RaiseFrom(inputEvent);
 
         if (IsInitialized)
+        {
             ImGuiImplAndroid.HandleInputEvent(inputEvent);
 
+            if (ShouldConsumeForImGui(inputEvent)
+                && outSeq != null
+                && TryFinishInputEvent((nint)thiz, *outSeq))
+            {
+                // NativeInputEventReceiver treats WOULD_BLOCK as "no event
+                // available".  The event remains valid and has already been
+                // acknowledged as handled, so Unity never receives it.
+                return StatusWouldBlock;
+            }
+        }
+
         return result;
+    }
+
+    private static bool ShouldConsumeForImGui(IntPtr inputEvent)
+    {
+        var io = ImGui.GetIO();
+        return AndroidInput.AInputEvent_getType(inputEvent) switch
+        {
+            AndroidInput.EventType.Key => io.WantCaptureKeyboard,
+            AndroidInput.EventType.Motion => ConsumeCapturedTouch(inputEvent, io.WantCaptureMouse),
+            _ => false,
+        };
+    }
+
+    private static bool ConsumeCapturedTouch(IntPtr inputEvent, bool wantCaptureMouse)
+    {
+        var action = AndroidInput.GetMainAction(AndroidInput.AMotionEvent_getAction(inputEvent));
+        switch (action)
+        {
+            case AndroidInput.MotionAction.Down:
+            case AndroidInput.MotionAction.PointerDown:
+            {
+                Volatile.Write(ref s_captureTouchSequence, wantCaptureMouse ? 1 : 0);
+                return wantCaptureMouse;
+            }
+
+            case AndroidInput.MotionAction.Up:
+            case AndroidInput.MotionAction.PointerUp:
+            case AndroidInput.MotionAction.Cancel:
+            {
+                bool captured = Volatile.Read(ref s_captureTouchSequence) != 0;
+                Volatile.Write(ref s_captureTouchSequence, 0);
+                return captured;
+            }
+
+            default:
+                return Volatile.Read(ref s_captureTouchSequence) != 0;
+        }
+    }
+
+    private static bool TryFinishInputEvent(nint consumer, uint sequence)
+    {
+        var sendFinishedSignal = GetSendFinishedSignal();
+        if (sendFinishedSignal == null)
+            return false;
+
+        try
+        {
+            return sendFinishedSignal(consumer, sequence, handled: 1) == StatusOk;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn(nameof(ImGuiInputHandler),
+                $"Failed to acknowledge captured input event: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static SendFinishedSignalDelegate? GetSendFinishedSignal()
+    {
+        lock (s_finishedSignalLock)
+        {
+            if (s_sendFinishedSignal != null)
+                return s_sendFinishedSignal;
+            if (s_finishedSignalResolutionAttempted)
+                return null;
+
+            s_finishedSignalResolutionAttempted = true;
+            var address = HookHelper.GetFunction("libinput.so", SendFinishedSignalSymbol);
+            if (address == nint.Zero)
+            {
+                Logger.Warn(nameof(ImGuiInputHandler),
+                    "InputConsumer.sendFinishedSignal is unavailable; forwarding input to the game.");
+                return null;
+            }
+
+            s_sendFinishedSignal =
+                Marshal.GetDelegateForFunctionPointer<SendFinishedSignalDelegate>(address);
+            return s_sendFinishedSignal;
+        }
     }
 
     private static JavaClass? s_utilsClass;

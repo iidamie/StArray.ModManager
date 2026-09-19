@@ -10,6 +10,7 @@ using StArray.ModManager.Mono;
 using StArray.ModManager.Resources;
 using StArray.ModManager.Runtime;
 using StArray.ModManager.Behaviours;
+using StArray.ModManager.UI;
 
 namespace StArray.ModManager.Manager;
 
@@ -160,6 +161,8 @@ public partial class ModManagerUI
 
         if (!_visible)
         {
+            ImGuiInputCaptureState.Clear();
+
             // 前景层：Mod 的 HUD 仍需绘制
             var fgList = ImGui.GetForegroundDrawList();
             foreach (var mod in _modManager.Mods)
@@ -183,6 +186,7 @@ public partial class ModManagerUI
         }
 
         // 背景层：每个 Mod 在 ImGui 窗口下方绘制
+        ImGuiInputCaptureState.BeginFrame();
         var bgDrawList = ImGui.GetBackgroundDrawList();
         foreach (var mod in _modManager.Mods)
         {
@@ -194,6 +198,8 @@ public partial class ModManagerUI
         RenderModSettingsWindow();
         RenderAddModPopup();
         RenderToast();
+
+        ImGuiInputCaptureState.PublishFrame();
 
         // ── BehaviourManager: OnGUI（ImGui 窗口绘制之后） ──
         BehaviourManager.GUI(bgDrawList);
@@ -211,6 +217,10 @@ public partial class ModManagerUI
     {
         ImGui.SetNextWindowSize(new Vector2(680, 650), ImGuiCond.FirstUseEver);
         ImGui.Begin(L10n.Get("MainWindow_Title"));
+            var windowPos = ImGui.GetWindowPos();
+            var windowSize = ImGui.GetWindowSize();
+            ImGuiInputCaptureState.RegisterWindow(
+                windowPos.X, windowPos.Y, windowSize.X, windowSize.Y);
             ImGui.PushTextWrapPos();
             if (ImGui.BeginTabBar("MainTabs"))
             {

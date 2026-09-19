@@ -5,6 +5,7 @@ using StArray.ModManager.Android.Native;
 using StArray.ModManager.Hooks;
 using StArray.ModManager.Manager;
 using StArray.ModManager.Runtime;
+using StArray.ModManager.UI;
 
 namespace StArray.ModManager.Android.UI;
 
@@ -134,14 +135,19 @@ public static partial class ImGuiInputHandler
 
     private static bool ConsumeCapturedTouch(IntPtr inputEvent, bool wantCaptureMouse)
     {
-        var action = AndroidInput.GetMainAction(AndroidInput.AMotionEvent_getAction(inputEvent));
+        int rawAction = AndroidInput.AMotionEvent_getAction(inputEvent);
+        var action = AndroidInput.GetMainAction(rawAction);
         switch (action)
         {
             case AndroidInput.MotionAction.Down:
             case AndroidInput.MotionAction.PointerDown:
             {
-                Volatile.Write(ref s_captureTouchSequence, wantCaptureMouse ? 1 : 0);
-                return wantCaptureMouse;
+                int pointerIndex = AndroidInput.GetPointerIndex(rawAction);
+                float x = AndroidInput.AMotionEvent_getX(inputEvent, pointerIndex);
+                float y = AndroidInput.AMotionEvent_getY(inputEvent, pointerIndex);
+                bool captured = wantCaptureMouse || ImGuiInputCaptureState.Contains(x, y);
+                Volatile.Write(ref s_captureTouchSequence, captured ? 1 : 0);
+                return captured;
             }
 
             case AndroidInput.MotionAction.Up:

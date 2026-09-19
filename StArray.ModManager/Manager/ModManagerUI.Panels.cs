@@ -6,6 +6,7 @@ using ImGuiNET;
 using StArray.ModManager.Inspector;
 using StArray.ModManager.Resources;
 using StArray.ModManager.Runtime;
+using StArray.ModManager.UI;
 
 namespace StArray.ModManager.Manager;
 
@@ -61,6 +62,10 @@ partial class ModManagerUI
 
         if (ImGui.Begin(title, ref open))
         {
+            var windowPos = ImGui.GetWindowPos();
+            var windowSize = ImGui.GetWindowSize();
+            ImGuiInputCaptureState.RegisterWindow(
+                windowPos.X, windowPos.Y, windowSize.X, windowSize.Y);
             settings.OnGui();
 
             ImGui.Spacing();
@@ -169,6 +174,10 @@ partial class ModManagerUI
         if (ImGui.BeginPopupModal(L10n.Get("AddMod_Title"), ref _showAddModPopup,
             ImGuiWindowFlags.AlwaysAutoResize))
         {
+            var windowPos = ImGui.GetWindowPos();
+            var windowSize = ImGui.GetWindowSize();
+            ImGuiInputCaptureState.RegisterWindow(
+                windowPos.X, windowPos.Y, windowSize.X, windowSize.Y);
             ImGui.TextColored(new Vector4(1f, 0.6f, 0.2f, 1f), FontAwesome7.Wrench + " 未实现");
             ImGui.Spacing();
             ImGui.Text(L10n.Get("AddMod_NotImplDetail"));

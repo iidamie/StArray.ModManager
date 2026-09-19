@@ -149,6 +149,7 @@ public sealed unsafe class D3D11Renderer : IImGuiRenderer
     nint WndHook(nint h, uint m, nint w, nint l)
     {
         if (ImGui_ImplWin32_WndProcHandler(h, m, w, l) != 0) return 1;
+        if (ImGuiInputCapture.ShouldCapture(m)) return 0;
         return Win32Native.CallWindowProcW(_origWnd, h, m, w, l);
     }
 

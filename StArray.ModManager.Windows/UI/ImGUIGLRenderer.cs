@@ -110,8 +110,13 @@ public sealed unsafe class ImGUIGLRenderer : IImGuiRenderer
 
     private IntPtr WndProcHook(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
-        if (_imguiInited && ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
-            return (IntPtr)1;
+        if (_imguiInited)
+        {
+            if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
+                return (IntPtr)1;
+            if (ImGuiInputCapture.ShouldCapture(msg))
+                return IntPtr.Zero;
+        }
         return Win32Native.CallWindowProcW(_origWndProc, hWnd, msg, wParam, lParam);
     }
 

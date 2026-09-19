@@ -16,10 +16,57 @@ namespace DX11Hook
     static bool Initialised = false;
     static bool isIl2Cpp;
 
+    static bool IsMouseMessage(UINT message)
+    {
+        switch (message)
+        {
+        case WM_NCMOUSEMOVE:
+        case WM_NCLBUTTONDOWN: case WM_NCLBUTTONUP: case WM_NCLBUTTONDBLCLK:
+        case WM_NCRBUTTONDOWN: case WM_NCRBUTTONUP: case WM_NCRBUTTONDBLCLK:
+        case WM_NCMBUTTONDOWN: case WM_NCMBUTTONUP: case WM_NCMBUTTONDBLCLK:
+        case WM_MOUSEMOVE: case WM_MOUSELEAVE:
+        case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+        case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
+        case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
+        case WM_XBUTTONDOWN: case WM_XBUTTONUP: case WM_XBUTTONDBLCLK:
+        case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
+        case WM_INPUT:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    static bool IsKeyboardMessage(UINT message)
+    {
+        switch (message)
+        {
+        case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP:
+        case WM_CHAR: case WM_DEADCHAR: case WM_SYSCHAR: case WM_SYSDEADCHAR:
+        case WM_IME_STARTCOMPOSITION: case WM_IME_ENDCOMPOSITION:
+        case WM_IME_COMPOSITION: case WM_IME_CHAR:
+        case WM_INPUT:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    static bool ImGuiOwnsMessage(UINT message)
+    {
+        const ImGuiIO *io = igGetIO();
+        return (IsMouseMessage(message) && io->WantCaptureMouse)
+            || (IsKeyboardMessage(message) && io->WantCaptureKeyboard);
+    }
+
     LRESULT APIENTRY HookWndProc(HWND h, UINT m, WPARAM w, LPARAM l)
     {
+        // Always feed the event to ImGui first. Its capture flags describe
+        // whether the same event must be hidden from the game underneath.
         if (ImGui_ImplWin32_WndProcHandler(h, m, w, l))
             return true;
+        if (ImGuiOwnsMessage(m))
+            return 0;
 
         if (m == WM_SIZE && w != SIZE_MINIMIZED && SwapChain)
         {

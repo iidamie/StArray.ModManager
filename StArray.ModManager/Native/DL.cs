@@ -34,6 +34,14 @@ public static class DL
         return dl_open(fileName, rtldFlags);
     }
 
+    /// <summary>
+    /// Calls <c>dlopen</c> directly and returns an owned loader handle.
+    /// Unlike <see cref="Open"/>, this never returns a mapped library base
+    /// address, so the result may safely be passed to <see cref="Close"/>.
+    /// </summary>
+    internal static IntPtr OpenHandle(string fileName, RTLDFlags rtldFlags) =>
+        dl_open(fileName, rtldFlags);
+
     public static IntPtr Symbol(IntPtr handle, string symbol) =>
         dl_sym(handle, symbol);
 

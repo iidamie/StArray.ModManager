@@ -67,10 +67,7 @@ public static partial class ImGuiInputHandler
         IsInitialized = true;
     }
 
-    /// <summary>
-    /// 在 InputConsumer 产出完整事件后送入 ImGui；若覆盖层捕获该事件，
-    /// 清空输出指针，避免 Unity 继续处理同一输入。
-    /// </summary>
+    /// <summary>在 InputConsumer 产出完整事件后送入 ImGui。</summary>
     [NativeHook(
         "libinput.so",
         "_ZN7android13InputConsumer7consumeEPNS_26InputEventFactoryInterfaceEblPjPPNS_10InputEventE",
@@ -94,26 +91,9 @@ public static partial class ImGuiInputHandler
             InputEvents.RaiseFrom(inputEvent);
 
         if (IsInitialized)
-        {
             ImGuiImplAndroid.HandleInputEvent(inputEvent);
-            if (IsCapturedByImGui(inputEvent))
-                *outEvent = null;
-        }
 
         return result;
-    }
-
-    private static bool IsCapturedByImGui(IntPtr inputEvent)
-    {
-        if (!IsInitialized || inputEvent == IntPtr.Zero)
-            return false;
-
-        return AndroidInput.AInputEvent_getType(inputEvent) switch
-        {
-            AndroidInput.EventType.Motion => ImGui.GetIO().WantCaptureMouse,
-            AndroidInput.EventType.Key => ImGui.GetIO().WantCaptureKeyboard,
-            _ => false,
-        };
     }
 
     private static JavaClass? s_utilsClass;

@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using ImGuiNET;
 using StArray.ModManager.Android.Native;
+using StArray.ModManager.Hooks;
 using StArray.ModManager.Manager;
 using StArray.ModManager.Native;
 using StArray.ModManager.Runtime;
@@ -34,16 +35,29 @@ public static partial class ImGuiInputHandler
         try
         {
             nint address = GetMotionEventInitializeAddress();
-            int hookResult = address == nint.Zero
-                ? -1
-                : InstallNativeMotionEventInitializeHook(
+            bool installed = false;
+            if (address != nint.Zero)
+            {
+                int hookResult = InstallNativeMotionEventInitializeHook(
                     address,
                     Marshal.GetFunctionPointerForDelegate(s_inputEventCallback));
-            if (hookResult != 0)
+                installed = hookResult == 0;
+                if (!installed)
+                {
+                    Logger.Warn(nameof(ImGuiInputHandler),
+                        $"MotionEvent.initialize native hook installation failed: {hookResult}; " +
+                        "trying legacy initializeMotionEvent.");
+                }
+            }
+
+            if (!installed)
+                installed = InstallLegacyMotionEventHook();
+
+            if (!installed)
             {
                 Logger.Error(nameof(ImGuiInputHandler),
-                    $"MotionEvent.initialize native hook installation failed: {hookResult}; " +
-                    "touch input is unavailable.");
+                    "Neither MotionEvent.initialize nor legacy initializeMotionEvent " +
+                    "could be hooked; touch input is unavailable.");
             }
             // IME 字符回调：Java nativeSendChar → C → 此回调 → ImGui
             NativeFunctions.SetOnAcceptCharCallback(codepoint =>
@@ -87,6 +101,36 @@ public static partial class ImGuiInputHandler
         IsInitialized = true;
     }
 
+    /// <summary>
+    /// Android 16 及更早版本仍使用 InputConsumer::initializeMotionEvent。
+    /// 新版 Android 17 的该符号已移除，因此只在新路径不可用时回退到这里。
+    /// </summary>
+    private static bool InstallLegacyMotionEventHook()
+    {
+        try
+        {
+            bool installed = InstallHooks();
+            if (installed)
+            {
+                Logger.Info(nameof(ImGuiInputHandler),
+                    "Legacy InputConsumer.initializeMotionEvent hook installed");
+            }
+            else
+            {
+                Logger.Warn(nameof(ImGuiInputHandler),
+                    "Legacy InputConsumer.initializeMotionEvent hook installation failed");
+            }
+
+            return installed;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn(nameof(ImGuiInputHandler),
+                $"Legacy initializeMotionEvent hook failed: {ex.Message}");
+            return false;
+        }
+    }
+
     private static void OnNativeInputEvent(nint inputEvent)
     {
         try
@@ -101,6 +145,35 @@ public static partial class ImGuiInputHandler
             Logger.Error(nameof(ImGuiInputHandler),
                 $"Input event dispatch failed: {ex}");
         }
+    }
+
+    /// <summary>
+    /// Android 旧版 libinput 的事件初始化 Hook。这个 ABI 是稳定的：
+    /// initializeMotionEvent(MotionEvent*, InputMessage const*) -> bool。
+    /// </summary>
+    [NativeHook("GetLegacyInitializeMotionEventAddress",
+        Convention = CallingConvention.Cdecl)]
+    public unsafe static bool OnInitializeMotionEvent(void* @event, void* message)
+    {
+        bool result = OnInitializeMotionEventOriginal(@event, message);
+        nint inputEvent = (nint)@event;
+        if (inputEvent != nint.Zero)
+            OnNativeInputEvent(inputEvent);
+
+        return result || IsCapturedByImGui(inputEvent);
+    }
+
+    private static bool IsCapturedByImGui(nint inputEvent)
+    {
+        if (!IsInitialized || inputEvent == nint.Zero)
+            return false;
+
+        return AndroidInput.AInputEvent_getType(inputEvent) switch
+        {
+            AndroidInput.EventType.Motion => ImGui.GetIO().WantCaptureMouse,
+            AndroidInput.EventType.Key => ImGui.GetIO().WantCaptureKeyboard,
+            _ => false,
+        };
     }
 
     /// <summary>
@@ -177,6 +250,9 @@ public static partial class ImGuiInputHandler
     private const string MotionEventInitializeSymbol =
         "_ZN7android11MotionEvent10initializeEiijNS_2ui16LogicalDisplayIdENSt3__15arrayIhLm32EEEiiNS_3ftl5FlagsINS_10MotionFlagEEEiiiNS_20MotionClassificationERKNS1_9TransformEffffSD_llmPKNS_17PointerPropertiesEPKNS_13PointerCoordsE";
 
+    private const string LegacyMotionEventInitializeSymbol =
+        "_ZN7android13InputConsumer21initializeMotionEventEPNS_11MotionEventEPKNS_12InputMessageE";
+
     private static nint s_inputLibraryHandle;
 
     /// <summary>
@@ -240,8 +316,119 @@ public static partial class ImGuiInputHandler
             return address;
         }
 
-        Logger.Error(nameof(ImGuiInputHandler),
-            "MotionEvent.initialize was not found in libinput.so.");
+        Logger.Info(nameof(ImGuiInputHandler),
+            "MotionEvent.initialize was not found in libinput.so; trying legacy hook.");
+        return nint.Zero;
+    }
+
+    /// <summary>
+    /// Resolve the pre-Android-17 InputConsumer::initializeMotionEvent hook.
+    /// Some older builds hide the symbol, so retain the original prologue
+    /// signature fallback as well as the dynamic symbol lookup.
+    /// </summary>
+    private static nint GetLegacyInitializeMotionEventAddress()
+    {
+        nint address = Dobby.SymbolResolver(
+            "libinput.so", LegacyMotionEventInitializeSymbol);
+        if (address != nint.Zero)
+        {
+            Logger.Info(nameof(ImGuiInputHandler),
+                $"Resolved legacy initializeMotionEvent through Dobby at 0x{address:X}");
+            return address;
+        }
+
+        try
+        {
+            var resolver = new NativeFuncResolver("/system/lib64/libinput.so");
+            long rva = resolver.FindSymbolRva(LegacyMotionEventInitializeSymbol);
+            if (rva < 0)
+            {
+                byte?[] signature = NativeFuncResolver.ParseHexPattern(
+                    "e8 0f 19 fc fd 7b 01 a9 fc 6f 02 a9 fa 67 03 a9 " +
+                    "f8 5f 04 a9 f6 57 05 a9 f4 4f 06 a9 fd 43 00 91");
+                var text = resolver.TextBytes;
+                long textAddress = resolver.TextBaseAddress;
+                int position = 0;
+                while ((position = NativeFuncResolver.Search(text, signature, position)) >= 0)
+                {
+                    int contextEnd = Math.Min(position + 60, text.Length);
+                    bool hasMrs = false;
+                    bool hasLdr = false;
+                    for (int j = position + 32; j <= contextEnd - 4; j += 4)
+                    {
+                        int instruction = BitConverter.ToInt32(text.AsSpan(j));
+                        if (!hasMrs && (instruction & 0xffffffe0) == 0xd53bd040)
+                            hasMrs = true;
+                        if (!hasLdr && (instruction & 0xffe003e0) == 0xb9400020)
+                        {
+                            int immediate = (instruction >> 10) & 0xfff;
+                            if (immediate * 4 == 0xc)
+                                hasLdr = true;
+                        }
+
+                        if (hasMrs && hasLdr)
+                            break;
+                    }
+
+                    if (hasMrs && hasLdr)
+                    {
+                        rva = textAddress + position;
+                        if (position >= 4)
+                        {
+                            int previous = BitConverter.ToInt32(text.AsSpan(position - 4));
+                            if (previous == unchecked((int)0xd503233f))
+                                rva -= 4;
+                        }
+
+                        break;
+                    }
+
+                    position++;
+                }
+            }
+
+            nint baseAddress = DL.GetBaseAddress("libinput.so");
+            if (rva >= 0 && baseAddress != nint.Zero && rva <= int.MaxValue)
+            {
+                address = IntPtr.Add(baseAddress, (int)rva);
+                Logger.Info(nameof(ImGuiInputHandler),
+                    $"Resolved legacy initializeMotionEvent through ELF at 0x{address:X}");
+                return address;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn(nameof(ImGuiInputHandler),
+                $"ELF resolution for legacy initializeMotionEvent failed: {ex.Message}");
+        }
+
+        foreach (string library in new[] { "/system/lib64/libinput.so", "libinput.so" })
+        {
+            nint handle = DL.OpenHandle(
+                library,
+                DL.RTLDFlags.RTLD_NOW | DL.RTLDFlags.RTLD_NOLOAD);
+            if (handle == nint.Zero)
+            {
+                handle = DL.OpenHandle(
+                    library,
+                    DL.RTLDFlags.RTLD_NOW | DL.RTLDFlags.RTLD_LOCAL);
+            }
+
+            if (handle == nint.Zero)
+                continue;
+
+            address = DL.Symbol(handle, LegacyMotionEventInitializeSymbol);
+            if (address == nint.Zero)
+                continue;
+
+            s_inputLibraryHandle = handle;
+            Logger.Info(nameof(ImGuiInputHandler),
+                $"Resolved legacy initializeMotionEvent through dlsym at 0x{address:X}");
+            return address;
+        }
+
+        Logger.Warn(nameof(ImGuiInputHandler),
+            "Legacy initializeMotionEvent was not found in libinput.so.");
         return nint.Zero;
     }
 

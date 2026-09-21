@@ -100,10 +100,7 @@ public static partial class ImGuiInputHandler
             if (outEvent != null && *outEvent != null)
             {
                 nint inputEvent = new(*outEvent);
-                if (InputEvents.HasSubscribers)
-                    InputEvents.RaiseFrom(inputEvent);
-                if (IsInitialized)
-                    ImGuiImplAndroid.HandleInputEvent(inputEvent);
+                DispatchInputEvent(inputEvent);
             }
         }
         catch (Exception ex)
@@ -115,6 +112,66 @@ public static partial class ImGuiInputHandler
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 把原生事件分发给 Mod 和 ImGui。部分 Android 17 厂商 ROM 会把触摸
+    /// 的工具类型报告成 Mouse/Stylus；官方 Android backend 随后会跳过
+    /// ACTION_DOWN/ACTION_UP 的左键更新，只留下悬停坐标。对触摸动作在
+    /// C# 层按动作码补齐鼠标状态，避免依赖工具类型。
+    /// </summary>
+    private static void DispatchInputEvent(nint inputEvent)
+    {
+        if (InputEvents.HasSubscribers)
+            InputEvents.RaiseFrom(inputEvent);
+
+        if (!IsInitialized)
+            return;
+
+        if (AndroidInput.AInputEvent_getType(inputEvent) != AndroidInput.EventType.Motion)
+        {
+            ImGuiImplAndroid.HandleInputEvent(inputEvent);
+            return;
+        }
+
+        int rawAction = AndroidInput.AMotionEvent_getAction(inputEvent);
+        AndroidInput.MotionAction action = AndroidInput.GetMainAction(rawAction);
+        int pointerCount = AndroidInput.AMotionEvent_getPointerCount(inputEvent);
+        if (pointerCount <= 0)
+            return;
+
+        int pointerIndex = Math.Clamp(
+            AndroidInput.GetPointerIndex(rawAction),
+            0,
+            pointerCount - 1);
+        float x = AndroidInput.AMotionEvent_getX(inputEvent, pointerIndex);
+        float y = AndroidInput.AMotionEvent_getY(inputEvent, pointerIndex);
+        var io = ImGui.GetIO();
+
+        switch (action)
+        {
+            case AndroidInput.MotionAction.Down:
+                io.AddMousePosEvent(x, y);
+                io.AddMouseButtonEvent(0, true);
+                break;
+
+            case AndroidInput.MotionAction.Up:
+            case AndroidInput.MotionAction.Cancel:
+                io.AddMousePosEvent(x, y);
+                io.AddMouseButtonEvent(0, false);
+                break;
+
+            case AndroidInput.MotionAction.Move:
+            case AndroidInput.MotionAction.HoverMove:
+            case AndroidInput.MotionAction.PointerDown:
+            case AndroidInput.MotionAction.PointerUp:
+                io.AddMousePosEvent(x, y);
+                break;
+
+            default:
+                ImGuiImplAndroid.HandleInputEvent(inputEvent);
+                break;
+        }
     }
 
     private const string InputConsumerConsumeSamplesSymbol =

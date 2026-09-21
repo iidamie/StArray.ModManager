@@ -15,8 +15,10 @@
 namespace motion_event_abi {
 struct LogicalDisplayId { int32_t value; };
 enum class MotionFlag : uint32_t {};
-struct MotionFlags { uint32_t value; };
-enum class MotionClassification : uint32_t {};
+// ftl::Flags is a non-trivial by-value C++ object in Android 17.  AArch64
+// lowers that parameter to a pointer to the caller-owned temporary.
+struct MotionFlags;
+enum class MotionClassification : uint8_t {};
 struct Transform;
 struct PointerProperties;
 struct PointerCoords;
@@ -31,7 +33,7 @@ using motion_event_initialize_fn = void (*) (
     std::array<uint8_t, 32> hmac,
     int32_t arg6,
     int32_t arg7,
-    motion_event_abi::MotionFlags motion_flags,
+    const motion_event_abi::MotionFlags *motion_flags,
     int32_t arg9,
     int32_t arg10,
     int32_t arg11,
@@ -61,7 +63,7 @@ static void modmanager_motion_event_initialize_detour(
     std::array<uint8_t, 32> hmac,
     int32_t arg6,
     int32_t arg7,
-    motion_event_abi::MotionFlags motion_flags,
+    const motion_event_abi::MotionFlags *motion_flags,
     int32_t arg9,
     int32_t arg10,
     int32_t arg11,

@@ -28,7 +28,8 @@ public static partial class ImGuiInputHandler
             if (!InstallHooks())
             {
                 Logger.Error(nameof(ImGuiInputHandler),
-                    "InputConsumer.consume hook installation failed; touch input is unavailable.");
+                    "InputConsumer.consumeSamples hook installation failed; " +
+                    "touch input is unavailable.");
             }
             // IME 字符回调：Java nativeSendChar → C → 此回调 → ImGui
             NativeFunctions.SetOnAcceptCharCallback(codepoint =>
@@ -73,43 +74,51 @@ public static partial class ImGuiInputHandler
     }
 
     /// <summary>
-    /// 在 Android 输入消费者完成解析后获取完整的 AInputEvent。
-    ///
-    /// Android 17/厂商版 libinput 已移除 initializeMotionEvent；继续按旧
-    /// 特征码计算会得到基址减一，并把 Dobby Hook 到无效地址。consume 是
-    /// InputConsumer 的稳定公开动态符号，且其输出事件已经可以交给 ImGui。
+    /// 在 InputConsumer.consumeSamples 完成后分发生成的 AInputEvent。
+    /// Android 17 的 consume 函数体较大，直接 Hook 它会破坏系统函数状态；
+    /// consumeSamples 是同一输入流程中的短函数，且输出参数 ABI 简单稳定。
     /// </summary>
-    [NativeHook("GetConsumeInputEventAddress", Convention = CallingConvention.Cdecl)]
-    public unsafe static int OnConsumeInputEvent(
+    [NativeHook("GetConsumeSamplesAddress", Convention = CallingConvention.Cdecl)]
+    public unsafe static int OnConsumeSamples(
         void* consumer,
         void* factory,
-        byte consumeBatches,
-        long frameTime,
+        void* batch,
+        ulong count,
         uint* outSeq,
         void** outEvent)
     {
-        int result = OnConsumeInputEventOriginal(
+        int result = OnConsumeSamplesOriginal(
             consumer,
             factory,
-            consumeBatches,
-            frameTime,
+            batch,
+            count,
             outSeq,
             outEvent);
 
-        if (outEvent != null && *outEvent != null)
+        try
         {
-            IntPtr inputEvent = new(*outEvent);
-            if (InputEvents.HasSubscribers)
-                InputEvents.RaiseFrom(inputEvent);
-            if (IsInitialized)
-                ImGuiImplAndroid.HandleInputEvent(inputEvent);
+            if (outEvent != null && *outEvent != null)
+            {
+                nint inputEvent = new(*outEvent);
+                if (InputEvents.HasSubscribers)
+                    InputEvents.RaiseFrom(inputEvent);
+                if (IsInitialized)
+                    ImGuiImplAndroid.HandleInputEvent(inputEvent);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Never let a managed exception unwind through the native input
+            // stack and terminate the game process.
+            Logger.Error(nameof(ImGuiInputHandler),
+                $"Input event dispatch failed: {ex}");
         }
 
         return result;
     }
 
-    private const string InputConsumerConsumeSymbol =
-        "_ZN7android13InputConsumer7consumeEPNS_26InputEventFactoryInterfaceEblPjPPNS_10InputEventE";
+    private const string InputConsumerConsumeSamplesSymbol =
+        "_ZN7android13InputConsumer14consumeSamplesEPNS_26InputEventFactoryInterfaceERNS0_5BatchEmPjPPNS_10InputEventE";
 
     private static nint s_inputLibraryHandle;
 
@@ -118,33 +127,33 @@ public static partial class ImGuiInputHandler
     /// linker namespace. Prefer the normal Dobby resolver, then fall back to
     /// the ELF dynamic symbol table and dlsym.
     /// </summary>
-    private static nint GetConsumeInputEventAddress()
+    private static nint GetConsumeSamplesAddress()
     {
-        nint address = Dobby.SymbolResolver("libinput.so", InputConsumerConsumeSymbol);
+        nint address = Dobby.SymbolResolver("libinput.so", InputConsumerConsumeSamplesSymbol);
         if (address != nint.Zero)
         {
             Logger.Info(nameof(ImGuiInputHandler),
-                $"Resolved InputConsumer.consume through Dobby at 0x{address:X}");
+                $"Resolved InputConsumer.consumeSamples through Dobby at 0x{address:X}");
             return address;
         }
 
         try
         {
             var resolver = new NativeFuncResolver("/system/lib64/libinput.so");
-            long rva = resolver.FindSymbolRva(InputConsumerConsumeSymbol);
+            long rva = resolver.FindSymbolRva(InputConsumerConsumeSamplesSymbol);
             nint baseAddress = DL.GetBaseAddress("libinput.so");
             if (rva >= 0 && baseAddress != nint.Zero && rva <= int.MaxValue)
             {
                 address = IntPtr.Add(baseAddress, (int)rva);
                 Logger.Info(nameof(ImGuiInputHandler),
-                    $"Resolved InputConsumer.consume through ELF at 0x{address:X}");
+                    $"Resolved InputConsumer.consumeSamples through ELF at 0x{address:X}");
                 return address;
             }
         }
         catch (Exception ex)
         {
             Logger.Warn(nameof(ImGuiInputHandler),
-                $"ELF resolution for InputConsumer.consume failed: {ex.Message}");
+                $"ELF resolution for InputConsumer.consumeSamples failed: {ex.Message}");
         }
 
         foreach (string library in new[] { "/system/lib64/libinput.so", "libinput.so" })
@@ -162,7 +171,7 @@ public static partial class ImGuiInputHandler
             if (handle == nint.Zero)
                 continue;
 
-            address = DL.Symbol(handle, InputConsumerConsumeSymbol);
+            address = DL.Symbol(handle, InputConsumerConsumeSamplesSymbol);
             if (address == nint.Zero)
                 continue;
 
@@ -170,12 +179,12 @@ public static partial class ImGuiInputHandler
             // the library and Dobby must be able to execute the hook later.
             s_inputLibraryHandle = handle;
             Logger.Info(nameof(ImGuiInputHandler),
-                $"Resolved InputConsumer.consume through dlsym at 0x{address:X}");
+                $"Resolved InputConsumer.consumeSamples through dlsym at 0x{address:X}");
             return address;
         }
 
         Logger.Error(nameof(ImGuiInputHandler),
-            "InputConsumer.consume was not found in libinput.so.");
+            "InputConsumer.consumeSamples was not found in libinput.so.");
         return nint.Zero;
     }
 

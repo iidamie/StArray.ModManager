@@ -1,9 +1,9 @@
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using ImGuiNET;
 using StArray.ModManager.Android.Native;
 using StArray.ModManager.Hooks;
 using StArray.ModManager.Manager;
+using StArray.ModManager.Native;
 using StArray.ModManager.Runtime;
 
 namespace StArray.ModManager.Android.UI;
@@ -25,7 +25,11 @@ public static partial class ImGuiInputHandler
         if (!IsInitialized) return;
         try
         {
-            InstallHooks();
+            if (!InstallHooks())
+            {
+                Logger.Error(nameof(ImGuiInputHandler),
+                    "InputConsumer.consume hook installation failed; touch input is unavailable.");
+            }
             // IME 字符回调：Java nativeSendChar → C → 此回调 → ImGui
             NativeFunctions.SetOnAcceptCharCallback(codepoint =>
             {
@@ -68,88 +72,111 @@ public static partial class ImGuiInputHandler
         IsInitialized = true;
     }
 
-    /*
-    /// <summary>触摸事件 Hook 回调</summary>
-    [NativeHook("libinput.so","_ZN7android13InputConsumer14consumeSamplesEPNS_26InputEventFactoryInterfaceERNS0_5BatchEmPjPPNS_10InputEventE")]
-    public unsafe static long OnConsumeSamples(void* thiz,void* factory, IntPtr batch,
-        ulong count, uint* outSeq, void** outEvent)
+    /// <summary>
+    /// 在 Android 输入消费者完成解析后获取完整的 AInputEvent。
+    ///
+    /// Android 17/厂商版 libinput 已移除 initializeMotionEvent；继续按旧
+    /// 特征码计算会得到基址减一，并把 Dobby Hook 到无效地址。consume 是
+    /// InputConsumer 的稳定公开动态符号，且其输出事件已经可以交给 ImGui。
+    /// </summary>
+    [NativeHook("GetConsumeInputEventAddress", Convention = CallingConvention.Cdecl)]
+    public unsafe static int OnConsumeInputEvent(
+        void* consumer,
+        void* factory,
+        byte consumeBatches,
+        long frameTime,
+        uint* outSeq,
+        void** outEvent)
     {
-        var result = OnConsumeSamplesOriginal(thiz,factory, batch, count, outSeq, outEvent);
-        if (IsInitialized && *outEvent != null) ImGuiImplAndroid.HandleInputEvent(new IntPtr(*outEvent));
-        return result;
-    }
-    
-    [NativeHook("libinput.so","_ZN7android13InputConsumer7consumeEPNS_26InputEventFactoryInterfaceEblPjPPNS_10InputEventE")]
-    public unsafe static long OnConsume(void* thiz, void* factory, bool consumeBatches, ulong frameTime, uint* outSeq, void** outEvent)
-    {
-        var result = OnConsumeOriginal(thiz, factory, consumeBatches, frameTime, outSeq, outEvent);
-        if (IsInitialized && *outEvent != null) ImGuiImplAndroid.HandleInputEvent(new IntPtr(*outEvent));
-        return result;
-    }*/
-    
-    [NativeHook("GetInitializeMotionEventAddress")]
-    public unsafe static bool OnInitializeMotionEvent(void* @event, void* message)
-    {
-        var result = OnInitializeMotionEventOriginal(@event, message);
-        var x = AndroidInput.AMotionEvent_getX(new(@event), 0);
-        var y = AndroidInput.AMotionEvent_getY(new(@event), 0);
-        if (InputEvents.HasSubscribers)
-            InputEvents.RaiseFrom(new IntPtr(@event));
-        ImGuiImplAndroid.HandleInputEvent(new IntPtr(@event));
+        int result = OnConsumeInputEventOriginal(
+            consumer,
+            factory,
+            consumeBatches,
+            frameTime,
+            outSeq,
+            outEvent);
+
+        if (outEvent != null && *outEvent != null)
+        {
+            IntPtr inputEvent = new(*outEvent);
+            if (InputEvents.HasSubscribers)
+                InputEvents.RaiseFrom(inputEvent);
+            if (IsInitialized)
+                ImGuiImplAndroid.HandleInputEvent(inputEvent);
+        }
+
         return result;
     }
 
-    private static nint GetInitializeMotionEventAddress()
+    private const string InputConsumerConsumeSymbol =
+        "_ZN7android13InputConsumer7consumeEPNS_26InputEventFactoryInterfaceEblPjPPNS_10InputEventE";
+
+    private static nint s_inputLibraryHandle;
+
+    /// <summary>
+    /// Resolve InputConsumer.consume without assuming a particular Android
+    /// linker namespace. Prefer the normal Dobby resolver, then fall back to
+    /// the ELF dynamic symbol table and dlsym.
+    /// </summary>
+    private static nint GetConsumeInputEventAddress()
     {
-        byte?[] sig = NativeFuncResolver.ParseHexPattern(
-            "e8 0f 19 fc fd 7b 01 a9 fc 6f 02 a9 fa 67 03 a9 " +
-            "f8 5f 04 a9 f6 57 05 a9 f4 4f 06 a9 fd 43 00 91");
-        var r = new NativeFuncResolver("/system/lib64/libinput.so");
-        long rva = r.FindSymbolRva("_ZN7android13InputConsumer21initializeMotionEventEPNS_11MotionEventEPKNS_12InputMessageE");
+        nint address = Dobby.SymbolResolver("libinput.so", InputConsumerConsumeSymbol);
+        if (address != nint.Zero)
+        {
+            Logger.Info(nameof(ImGuiInputHandler),
+                $"Resolved InputConsumer.consume through Dobby at 0x{address:X}");
+            return address;
+        }
+
         try
         {
-            if (rva < 0)
+            var resolver = new NativeFuncResolver("/system/lib64/libinput.so");
+            long rva = resolver.FindSymbolRva(InputConsumerConsumeSymbol);
+            nint baseAddress = DL.GetBaseAddress("libinput.so");
+            if (rva >= 0 && baseAddress != nint.Zero && rva <= int.MaxValue)
             {
-                var text = r.TextBytes;
-                long textAddr = r.TextBaseAddress;
-                int pos = 0;
-                while ((pos = NativeFuncResolver.Search(text, sig, pos)) >= 0)
-                {
-                    int ctxEnd = Math.Min(pos + 60, text.Length);
-                    bool hasMrs = false, hasLdr = false;
-                    for (int j = pos + 32; j <= ctxEnd - 4; j += 4)
-                    {
-                        int inst = BitConverter.ToInt32(text.AsSpan(j));
-                        if (!hasMrs && (inst & 0xffffffe0) == 0xd53bd040)
-                            hasMrs = true;
-                        if (!hasLdr && (inst & 0xffe003e0) == 0xb9400020)
-                        {
-                            int imm12 = (inst >> 10) & 0xfff;
-                            if (imm12 * 4 == 0xc) hasLdr = true;
-                        }
-                        if (hasMrs && hasLdr) break;
-                    }
-                    if (hasMrs && hasLdr)
-                    {
-                        rva = textAddr + pos;
-                        if (pos >= 4)
-                        {
-                            int prev = BitConverter.ToInt32(text.AsSpan(pos - 4));
-                            if (prev == unchecked((int)0xd503233f)) rva -= 4;
-                        }
-                        break;
-                    }
-                    pos++;
-                }
-                if (rva < 0) throw new KeyNotFoundException("initializeMotionEvent not found by signature.");
+                address = IntPtr.Add(baseAddress, (int)rva);
+                Logger.Info(nameof(ImGuiInputHandler),
+                    $"Resolved InputConsumer.consume through ELF at 0x{address:X}");
+                return address;
             }
         }
         catch (Exception ex)
         {
-            Logger.Error(nameof(ImGuiInputHandler), ex.ToString());
+            Logger.Warn(nameof(ImGuiInputHandler),
+                $"ELF resolution for InputConsumer.consume failed: {ex.Message}");
         }
-        r.Load();
-        return r.GetFuncPtr(rva);
+
+        foreach (string library in new[] { "/system/lib64/libinput.so", "libinput.so" })
+        {
+            nint handle = DL.OpenHandle(
+                library,
+                DL.RTLDFlags.RTLD_NOW | DL.RTLDFlags.RTLD_NOLOAD);
+            if (handle == nint.Zero)
+            {
+                handle = DL.OpenHandle(
+                    library,
+                    DL.RTLDFlags.RTLD_NOW | DL.RTLDFlags.RTLD_LOCAL);
+            }
+
+            if (handle == nint.Zero)
+                continue;
+
+            address = DL.Symbol(handle, InputConsumerConsumeSymbol);
+            if (address == nint.Zero)
+                continue;
+
+            // Do not close this handle: it may be the only owned reference to
+            // the library and Dobby must be able to execute the hook later.
+            s_inputLibraryHandle = handle;
+            Logger.Info(nameof(ImGuiInputHandler),
+                $"Resolved InputConsumer.consume through dlsym at 0x{address:X}");
+            return address;
+        }
+
+        Logger.Error(nameof(ImGuiInputHandler),
+            "InputConsumer.consume was not found in libinput.so.");
+        return nint.Zero;
     }
 
     private static JavaClass? s_utilsClass;

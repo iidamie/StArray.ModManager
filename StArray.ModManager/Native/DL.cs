@@ -34,6 +34,14 @@ public static class DL
         return dl_open(fileName, rtldFlags);
     }
 
+    /// <summary>
+    /// Directly obtains a loader handle. Unlike <see cref="Open"/>, this never
+    /// substitutes an image base address, so the result is safe to pass to
+    /// <see cref="Symbol"/>.
+    /// </summary>
+    public static IntPtr OpenHandle(string fileName, RTLDFlags rtldFlags) =>
+        dl_open(fileName, rtldFlags);
+
     public static IntPtr Symbol(IntPtr handle, string symbol) =>
         dl_sym(handle, symbol);
 

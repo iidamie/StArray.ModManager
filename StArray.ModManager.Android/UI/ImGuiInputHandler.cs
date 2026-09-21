@@ -148,6 +148,17 @@ public static partial class ImGuiInputHandler
         float y = AndroidInput.AMotionEvent_getY(inputEvent, pointerIndex);
         var io = ImGui.GetIO();
 
+        if (action is AndroidInput.MotionAction.Down
+            or AndroidInput.MotionAction.Up
+            or AndroidInput.MotionAction.Cancel)
+        {
+            int toolType = AndroidInput.AMotionEvent_getToolType(inputEvent, pointerIndex);
+            Logger.Info(nameof(ImGuiInputHandler),
+                $"Motion action={action} raw=0x{rawAction:X8} " +
+                $"pointer={pointerIndex}/{pointerCount} tool={toolType} " +
+                $"x={x:F1} y={y:F1}");
+        }
+
         switch (action)
         {
             case AndroidInput.MotionAction.Down:

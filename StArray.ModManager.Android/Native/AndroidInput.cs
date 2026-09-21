@@ -159,6 +159,9 @@ public static class AndroidInput
     public static extern float AMotionEvent_getY(IntPtr ev, int pointerIndex);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int AMotionEvent_getToolType(IntPtr ev, int pointerIndex);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     public static extern int AMotionEvent_getPointerCount(IntPtr ev);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]

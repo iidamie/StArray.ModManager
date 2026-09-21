@@ -1,7 +1,6 @@
 using System.Runtime.InteropServices;
 using ImGuiNET;
 using StArray.ModManager.Android.Native;
-using StArray.ModManager.Hooks;
 using StArray.ModManager.Manager;
 using StArray.ModManager.Native;
 using StArray.ModManager.Runtime;
@@ -11,6 +10,15 @@ namespace StArray.ModManager.Android.UI;
 /// <summary>ImGui input handler / 输入处理器 — touch/key hooks + IME control</summary>
 public static partial class ImGuiInputHandler
 {
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void InputEventCallback(nint inputEvent);
+
+    [DllImport("modmanager", EntryPoint = "modmanager_install_motion_event_initialize_hook",
+        CallingConvention = CallingConvention.Cdecl)]
+    private static extern int InstallNativeMotionEventInitializeHook(nint address, nint callback);
+
+    private static readonly InputEventCallback s_inputEventCallback = OnNativeInputEvent;
+
     /// <summary>ImGui 上下文就绪后由渲染器设置</summary>
     public static bool IsInitialized { get; set; }
     
@@ -25,10 +33,16 @@ public static partial class ImGuiInputHandler
         if (!IsInitialized) return;
         try
         {
-            if (!InstallHooks())
+            nint address = GetMotionEventInitializeAddress();
+            int hookResult = address == nint.Zero
+                ? -1
+                : InstallNativeMotionEventInitializeHook(
+                    address,
+                    Marshal.GetFunctionPointerForDelegate(s_inputEventCallback));
+            if (hookResult != 0)
             {
                 Logger.Error(nameof(ImGuiInputHandler),
-                    "InputConsumer.consumeSamples hook installation failed; " +
+                    $"MotionEvent.initialize native hook installation failed: {hookResult}; " +
                     "touch input is unavailable.");
             }
             // IME 字符回调：Java nativeSendChar → C → 此回调 → ImGui
@@ -73,35 +87,12 @@ public static partial class ImGuiInputHandler
         IsInitialized = true;
     }
 
-    /// <summary>
-    /// 在 InputConsumer.consumeSamples 完成后分发生成的 AInputEvent。
-    /// Android 17 的 consume 函数体较大，直接 Hook 它会破坏系统函数状态；
-    /// consumeSamples 是同一输入流程中的短函数，且输出参数 ABI 简单稳定。
-    /// </summary>
-    [NativeHook("GetConsumeSamplesAddress", Convention = CallingConvention.Cdecl)]
-    public unsafe static int OnConsumeSamples(
-        void* consumer,
-        void* factory,
-        void* batch,
-        ulong count,
-        uint* outSeq,
-        void** outEvent)
+    private static void OnNativeInputEvent(nint inputEvent)
     {
-        int result = OnConsumeSamplesOriginal(
-            consumer,
-            factory,
-            batch,
-            count,
-            outSeq,
-            outEvent);
-
         try
         {
-            if (outEvent != null && *outEvent != null)
-            {
-                nint inputEvent = new(*outEvent);
+            if (inputEvent != nint.Zero)
                 DispatchInputEvent(inputEvent);
-            }
         }
         catch (Exception ex)
         {
@@ -110,8 +101,6 @@ public static partial class ImGuiInputHandler
             Logger.Error(nameof(ImGuiInputHandler),
                 $"Input event dispatch failed: {ex}");
         }
-
-        return result;
     }
 
     /// <summary>
@@ -185,43 +174,43 @@ public static partial class ImGuiInputHandler
         }
     }
 
-    private const string InputConsumerConsumeSamplesSymbol =
-        "_ZN7android13InputConsumer14consumeSamplesEPNS_26InputEventFactoryInterfaceERNS0_5BatchEmPjPPNS_10InputEventE";
+    private const string MotionEventInitializeSymbol =
+        "_ZN7android11MotionEvent10initializeEiijNS_2ui16LogicalDisplayIdENSt3__15arrayIhLm32EEEiiNS_3ftl5FlagsINS_10MotionFlagEEEiiiNS_20MotionClassificationERKNS1_9TransformEffffSD_llmPKNS_17PointerPropertiesEPKNS_13PointerCoordsE";
 
     private static nint s_inputLibraryHandle;
 
     /// <summary>
-    /// Resolve InputConsumer.consume without assuming a particular Android
+    /// Resolve MotionEvent.initialize without assuming a particular Android
     /// linker namespace. Prefer the normal Dobby resolver, then fall back to
     /// the ELF dynamic symbol table and dlsym.
     /// </summary>
-    private static nint GetConsumeSamplesAddress()
+    private static nint GetMotionEventInitializeAddress()
     {
-        nint address = Dobby.SymbolResolver("libinput.so", InputConsumerConsumeSamplesSymbol);
+        nint address = Dobby.SymbolResolver("libinput.so", MotionEventInitializeSymbol);
         if (address != nint.Zero)
         {
             Logger.Info(nameof(ImGuiInputHandler),
-                $"Resolved InputConsumer.consumeSamples through Dobby at 0x{address:X}");
+                $"Resolved MotionEvent.initialize through Dobby at 0x{address:X}");
             return address;
         }
 
         try
         {
             var resolver = new NativeFuncResolver("/system/lib64/libinput.so");
-            long rva = resolver.FindSymbolRva(InputConsumerConsumeSamplesSymbol);
+            long rva = resolver.FindSymbolRva(MotionEventInitializeSymbol);
             nint baseAddress = DL.GetBaseAddress("libinput.so");
             if (rva >= 0 && baseAddress != nint.Zero && rva <= int.MaxValue)
             {
                 address = IntPtr.Add(baseAddress, (int)rva);
                 Logger.Info(nameof(ImGuiInputHandler),
-                    $"Resolved InputConsumer.consumeSamples through ELF at 0x{address:X}");
+                    $"Resolved MotionEvent.initialize through ELF at 0x{address:X}");
                 return address;
             }
         }
         catch (Exception ex)
         {
             Logger.Warn(nameof(ImGuiInputHandler),
-                $"ELF resolution for InputConsumer.consumeSamples failed: {ex.Message}");
+                $"ELF resolution for MotionEvent.initialize failed: {ex.Message}");
         }
 
         foreach (string library in new[] { "/system/lib64/libinput.so", "libinput.so" })
@@ -239,7 +228,7 @@ public static partial class ImGuiInputHandler
             if (handle == nint.Zero)
                 continue;
 
-            address = DL.Symbol(handle, InputConsumerConsumeSamplesSymbol);
+            address = DL.Symbol(handle, MotionEventInitializeSymbol);
             if (address == nint.Zero)
                 continue;
 
@@ -247,12 +236,12 @@ public static partial class ImGuiInputHandler
             // the library and Dobby must be able to execute the hook later.
             s_inputLibraryHandle = handle;
             Logger.Info(nameof(ImGuiInputHandler),
-                $"Resolved InputConsumer.consumeSamples through dlsym at 0x{address:X}");
+                $"Resolved MotionEvent.initialize through dlsym at 0x{address:X}");
             return address;
         }
 
         Logger.Error(nameof(ImGuiInputHandler),
-            "InputConsumer.consumeSamples was not found in libinput.so.");
+            "MotionEvent.initialize was not found in libinput.so.");
         return nint.Zero;
     }
 

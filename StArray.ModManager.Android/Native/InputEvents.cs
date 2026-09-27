@@ -43,11 +43,13 @@ public readonly record struct TouchTimestampInfo(
     long EventTimeNanos);
 
 /// <summary>
-/// 输入事件广播点。原生输入 Hook 只负责解析一次事件，订阅方在自己的队列中异步处理。
+/// 输入事件广播点。每个订阅者收到的都是从原始 Android 输入事件复制出的托管快照。
 /// </summary>
 /// <remarks>
-/// 回调运行在 Android 输入分发线程，不是 Unity 主线程。订阅方只能做廉价的值类型快照
-/// 和入队操作，不能访问 Unity 对象或执行 IL2CPP 游戏逻辑。
+/// 所有回调都在 Android 输入分发线程同步执行；OnInput 每个 Java KeyEvent/MotionEvent
+/// 恰好回调一次，MotionEvent 的当前样本和历史样本都包含在同一份快照中。回调应快速返回，
+/// 耗时工作应由订阅者自行转交到后台队列。OnInput 需要宿主 Activity 转发桥接；旧的
+/// OnTouch/OnTouchTimestamp 在未打补丁的宿主上仍可使用 Native 回退路径。
 /// </remarks>
 public static class InputEvents
 {
@@ -56,8 +58,10 @@ public static class InputEvents
 
     private static Action<TouchEventInfo>? s_onTouch;
     private static Action<TouchTimestampInfo>? s_onTouchTimestamp;
+    private static Action<AndroidInputEventInfo>? s_onInput;
     private static int s_touchSubscriberCount;
     private static int s_touchTimestampSubscriberCount;
+    private static int s_inputSubscriberCount;
     private static int s_faultLogged;
 
     private static readonly object DedupLock = new();
@@ -117,6 +121,117 @@ public static class InputEvents
             {
                 s_onTouchTimestamp -= value;
                 Interlocked.Decrement(ref s_touchTimestampSubscriberCount);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Full Java KeyEvent/MotionEvent snapshots, including external keyboard metadata, multi-touch
+    /// pointers, historical samples, screen coordinates, timestamps, and Android axis values.
+    /// Each callback runs synchronously on the Android input-dispatch thread. This channel requires
+    /// the patched host Activity bridge; existing OnTouch channels continue to work through the
+    /// native fallback on older hosts.
+    /// </summary>
+    public static event Action<AndroidInputEventInfo>? OnInput
+    {
+        add
+        {
+            if (value == null) return;
+            lock (DedupLock)
+            {
+                s_onInput += value;
+                Interlocked.Increment(ref s_inputSubscriberCount);
+                AndroidJavaInputBridge.SetFullDataEnabled(true);
+            }
+        }
+        remove
+        {
+            if (value == null) return;
+            lock (DedupLock)
+            {
+                s_onInput -= value;
+                int count = Interlocked.Decrement(ref s_inputSubscriberCount);
+                if (count <= 0)
+                {
+                    Interlocked.Exchange(ref s_inputSubscriberCount, 0);
+                    AndroidJavaInputBridge.SetFullDataEnabled(false);
+                }
+            }
+        }
+    }
+
+    /// <summary>Synchronously broadcast one copied Java event on its input-dispatch thread.</summary>
+    internal static void RaiseFromJava(AndroidInputEventInfo input)
+    {
+        Action<AndroidInputEventInfo>? inputHandlers;
+        Action<TouchEventInfo>? touchHandlers;
+        Action<TouchTimestampInfo>? timestampHandlers;
+        lock (DedupLock)
+        {
+            inputHandlers = s_onInput;
+            touchHandlers = s_onTouch;
+            timestampHandlers = s_onTouchTimestamp;
+        }
+
+        if (inputHandlers != null)
+            DispatchInputHandlers(inputHandlers, input);
+
+        if (input.Kind != AndroidInputEventKind.Motion
+            || input.IsGenericMotion
+            || (touchHandlers == null && timestampHandlers == null))
+        {
+            return;
+        }
+
+        int pointerCount = input.StoredPointerCount;
+        if (pointerCount == 0)
+            return;
+
+        AndroidInput.MotionAction action = (AndroidInput.MotionAction)input.Action;
+        int pointerIndex = Math.Clamp(input.ActionIndex, 0, pointerCount - 1);
+        AndroidInputPointerInfo pointer = input.Pointers.Span[pointerIndex];
+        long eventTimeNanos = input.EventTimeNanos;
+        int pointerId = action == AndroidInput.MotionAction.Cancel ? -1 : pointer.Id;
+        bool timestampAction = action is AndroidInput.MotionAction.Down
+            or AndroidInput.MotionAction.PointerDown
+            or AndroidInput.MotionAction.Up
+            or AndroidInput.MotionAction.PointerUp
+            or AndroidInput.MotionAction.Cancel;
+
+        if (timestampHandlers != null && timestampAction)
+        {
+            DispatchTimestampHandlers(
+                timestampHandlers,
+                new TouchTimestampInfo(action, pointerId, eventTimeNanos));
+        }
+
+        if (touchHandlers != null)
+        {
+            DispatchTouchHandlers(
+                touchHandlers,
+                new TouchEventInfo(
+                    action,
+                    pointerIndex,
+                    pointerId,
+                    eventTimeNanos,
+                    pointer.X,
+                    pointer.Y));
+        }
+    }
+
+    private static void DispatchInputHandlers(
+        Action<AndroidInputEventInfo> handlers,
+        AndroidInputEventInfo input)
+    {
+        foreach (Delegate handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                ((Action<AndroidInputEventInfo>)handler)(input);
+            }
+            catch (Exception exception)
+            {
+                LogOnce($"Input subscriber threw: {exception}");
             }
         }
     }

@@ -427,7 +427,19 @@ public class ModManagerUpdater {
         if (!useProxy) return url;
         var prefix = customProxyUrl != null && !customProxyUrl.isEmpty()
                 ? customProxyUrl : DEFAULT_PROXY_URL;
-        return prefix + url;
+
+        String sourceUrl = url.trim();
+        if (sourceUrl.startsWith("//")) {
+            sourceUrl = "https:" + sourceUrl;
+        } else if (!sourceUrl.startsWith("https://") && !sourceUrl.startsWith("http://")) {
+            while (sourceUrl.startsWith("/"))
+                sourceUrl = sourceUrl.substring(1);
+            if (!sourceUrl.startsWith("raw.githubusercontent.com/"))
+                sourceUrl = "raw.githubusercontent.com/" + sourceUrl;
+            sourceUrl = "https://" + sourceUrl;
+        }
+
+        return prefix + sourceUrl;
     }
 
     private String httpGetString(String urlStr) throws IOException {

@@ -152,10 +152,17 @@ public class ModManagerUpdater {
                         return;
                     }
                     int localVersionCode = hasLocal ? finalLocalVersion.androidVersionCode() : 0;
+                    String localSha256 = hasLocal ? finalLocalVersion.downloadSha256() : null;
+                    boolean checksumChanged = hasLocal
+                            && localVersionCode == remoteAndroid.versionCode
+                            && remoteAndroid.sha256 != null && !remoteAndroid.sha256.isEmpty()
+                            && (localSha256 == null
+                                || !remoteAndroid.sha256.equalsIgnoreCase(localSha256));
                     Log.i(TAG, "Remote Android manager version: " + remoteAndroid.version
                             + " (code=" + remoteAndroid.versionCode + ")");
                     boolean needUpdate = !hasLocal
-                            || localVersionCode < remoteAndroid.versionCode;
+                            || localVersionCode < remoteAndroid.versionCode
+                            || checksumChanged;
                     Log.i(TAG, "needUpdate=" + needUpdate + " hasLocal=" + hasLocal);
                     if (!needUpdate) {
                         Log.i(TAG, "Manager is up to date");

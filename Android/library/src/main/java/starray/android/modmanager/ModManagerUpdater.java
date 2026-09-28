@@ -40,7 +40,7 @@ import java.util.zip.ZipInputStream;
 public class ModManagerUpdater {
 
     private static final String TAG = "ModManagerUpdater";
-    private static final String DEFAULT_PROXY_URL = "https://gh-proxy.org/";
+    private static final String DEFAULT_PROXY_URL = "https://gh-proxy.com/";
 
     private final Activity activity;
     private String versionJsonUrl;

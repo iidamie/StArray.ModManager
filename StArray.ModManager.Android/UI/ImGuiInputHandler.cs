@@ -39,6 +39,13 @@ public static partial class ImGuiInputHandler
         CallingConvention = CallingConvention.Cdecl)]
     private static extern uint GetWindowScrollbarId(nint window, int axis);
 
+    [DllImport("cimgui", EntryPoint = "ImGuiWindow_GetID_Str",
+        CallingConvention = CallingConvention.Cdecl)]
+    private static extern uint GetWindowId(
+        nint window,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string id,
+        nint idEnd);
+
     /// <summary>ImGui 上下文就绪后由渲染器设置</summary>
     public static bool IsInitialized { get; set; }
     
@@ -51,6 +58,7 @@ public static partial class ImGuiInputHandler
     private static bool s_touchScrollPending;
     private static bool s_touchScrolling;
     private static bool s_touchStartedOnScrollbar;
+    private static bool s_touchStartedOnWindowMove;
     private static float s_touchStartX;
     private static float s_touchStartY;
     private static float s_touchLastX;
@@ -261,14 +269,16 @@ public static partial class ImGuiInputHandler
         int cursor = (int)ImGui.GetMouseCursor();
         if (s_touchGestureActive && activeItem && IsActiveScrollbarUnderPointer())
             s_touchStartedOnScrollbar = true;
+        if (s_touchGestureActive && activeItem && IsActiveWindowMoveUnderPointer())
+            s_touchStartedOnWindowMove = true;
 
         // Dear ImGui 1.91 cursor values: TextInput=1, ResizeAll=2, and resize cursors=3..6.
         // Keep direct manipulation controls draggable while allowing a swipe over buttons/items
         // to become a scroll gesture. Scrollbar drags keep ImGui's direct handling.
         bool directManipulationCursor = cursor is >= 1 and <= 6;
-        bool activeScrollbar = s_touchStartedOnScrollbar;
-        s_touchScrollCancelsActiveItem = activeItem && !activeScrollbar;
-        s_touchScrollEligible = io.WantCaptureMouse && !activeScrollbar
+        bool directImGuiDrag = s_touchStartedOnScrollbar || s_touchStartedOnWindowMove;
+        s_touchScrollCancelsActiveItem = activeItem && !directImGuiDrag;
+        s_touchScrollEligible = io.WantCaptureMouse && !directImGuiDrag
             && (!activeItem || !directManipulationCursor);
 
         float fontSize = MathF.Max(ImGui.GetFontSize(), 1.0f);
@@ -282,6 +292,7 @@ public static partial class ImGuiInputHandler
         s_touchScrollPending = true;
         s_touchScrolling = false;
         s_touchStartedOnScrollbar = false;
+        s_touchStartedOnWindowMove = false;
         s_touchStartX = s_touchLastX = x;
         s_touchStartY = s_touchLastY = y;
     }
@@ -317,6 +328,12 @@ public static partial class ImGuiInputHandler
                     && IsActiveScrollbarUnderPointer())
                 {
                     s_touchStartedOnScrollbar = true;
+                    canStartTouchScroll = false;
+                }
+                if (canStartTouchScroll && s_touchScrollCancelsActiveItem
+                    && IsActiveWindowMoveUnderPointer())
+                {
+                    s_touchStartedOnWindowMove = true;
                     canStartTouchScroll = false;
                 }
 
@@ -372,12 +389,31 @@ public static partial class ImGuiInputHandler
             || activeId == GetWindowScrollbarId(hoveredWindow, 1);
     }
 
+    private static bool IsActiveWindowMoveUnderPointer()
+    {
+        uint activeId = GetActiveId();
+        if (activeId == 0)
+            return false;
+
+        Vector2 mousePosition = ImGui.GetIO().MousePos;
+        FindHoveredWindowEx(
+            new NativeImVec2(mousePosition.X, mousePosition.Y),
+            false,
+            out nint hoveredWindow,
+            out _);
+        if (hoveredWindow == nint.Zero)
+            return false;
+
+        return activeId == GetWindowId(hoveredWindow, "#MOVE", nint.Zero);
+    }
+
     private static void EndTouchGesture()
     {
         s_touchGestureActive = false;
         s_touchScrollPending = false;
         s_touchScrolling = false;
         s_touchStartedOnScrollbar = false;
+        s_touchStartedOnWindowMove = false;
     }
 
     private static void DispatchJavaKeyEvent(

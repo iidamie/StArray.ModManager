@@ -10,6 +10,7 @@ using StArray.ModManager.Mono;
 using StArray.ModManager.Resources;
 using StArray.ModManager.Runtime;
 using StArray.ModManager.Behaviours;
+using StArray.ModManager.UI;
 
 namespace StArray.ModManager.Manager;
 
@@ -246,6 +247,10 @@ public partial class ModManagerUI
                         ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg |
                         ImGuiTableFlags.Resizable | ImGuiTableFlags.ScrollY))
                     {
+                        Vector2 tableMin = ImGui.GetWindowPos();
+                        Vector2 tableSize = ImGui.GetWindowSize();
+                        ImGuiTouchScrollWhitelist.Register(tableMin, tableMin + tableSize);
+
                         ImGui.TableSetupColumn(L10n.Get("Col_State"), ImGuiTableColumnFlags.WidthFixed, 100);
                         ImGui.TableSetupColumn(L10n.Get("Col_Name"), ImGuiTableColumnFlags.WidthStretch);
                         ImGui.TableSetupColumn(L10n.Get("Col_Version"), ImGuiTableColumnFlags.WidthFixed, 100);
@@ -309,6 +314,10 @@ public partial class ModManagerUI
                             if (ImGui.BeginChild("LogScroll", Vector2.Zero, ImGuiChildFlags.None,
                                 ImGuiWindowFlags.HorizontalScrollbar | ImGuiWindowFlags.AlwaysVerticalScrollbar))
                             {
+                                Vector2 logMin = ImGui.GetWindowPos();
+                                Vector2 logSize = ImGui.GetWindowSize();
+                                ImGuiTouchScrollWhitelist.Register(logMin, logMin + logSize);
+
                                 try
                                 {
                                     var atBottom = logSnapshot.Length == 0 ||

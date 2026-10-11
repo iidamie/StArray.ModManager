@@ -3,6 +3,7 @@ using ImGuiNET;
 using StArray.ModManager.Android.Native;
 using StArray.ModManager.Manager;
 using StArray.ModManager.Native;
+using StArray.ModManager.UI;
 
 namespace StArray.ModManager.Android.UI;
 
@@ -281,6 +282,7 @@ public static partial class ImGuiInputHandler
         if (!IsInitialized)
             return;
 
+        ImGuiTouchScrollWhitelist.PublishFrame();
         ImGuiIOPtr io = ImGui.GetIO();
         if (s_touchGestureActive && !s_touchGestureClassified)
         {
@@ -302,6 +304,7 @@ public static partial class ImGuiInputHandler
                 || (activeItem && directManipulationCursor);
             s_touchScrollCancelsActiveItem = activeItem && !directImGuiDrag;
             s_touchScrollEligible = startWindow != nint.Zero
+                && ImGuiTouchScrollWhitelist.Contains(s_touchStartX, s_touchStartY)
                 && io.WantCaptureMouse
                 && !directImGuiDrag;
             s_touchGestureClassified = true;

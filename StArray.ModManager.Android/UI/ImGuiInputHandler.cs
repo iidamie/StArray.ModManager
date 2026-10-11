@@ -1,3 +1,5 @@
+using System.Numerics;
+using System.Runtime.InteropServices;
 using ImGuiNET;
 using StArray.ModManager.Android.Native;
 using StArray.ModManager.Manager;
@@ -8,6 +10,35 @@ namespace StArray.ModManager.Android.UI;
 /// <summary>ImGui input handler / 输入处理器 — Java bridge input + IME control</summary>
 public static partial class ImGuiInputHandler
 {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeImVec2
+    {
+        public float X;
+        public float Y;
+
+        public NativeImVec2(float x, float y)
+        {
+            X = x;
+            Y = y;
+        }
+    }
+
+    [DllImport("cimgui", EntryPoint = "igFindHoveredWindowEx",
+        CallingConvention = CallingConvention.Cdecl)]
+    private static extern void FindHoveredWindowEx(
+        NativeImVec2 position,
+        [MarshalAs(UnmanagedType.I1)] bool findFirstAndInAnyViewport,
+        out nint hoveredWindow,
+        out nint hoveredWindowUnderMovingWindow);
+
+    [DllImport("cimgui", EntryPoint = "igGetActiveID",
+        CallingConvention = CallingConvention.Cdecl)]
+    private static extern uint GetActiveId();
+
+    [DllImport("cimgui", EntryPoint = "igGetWindowScrollbarID",
+        CallingConvention = CallingConvention.Cdecl)]
+    private static extern uint GetWindowScrollbarId(nint window, int axis);
+
     /// <summary>ImGui 上下文就绪后由渲染器设置</summary>
     public static bool IsInitialized { get; set; }
     
@@ -19,6 +50,7 @@ public static partial class ImGuiInputHandler
     private static bool s_touchGestureActive;
     private static bool s_touchScrollPending;
     private static bool s_touchScrolling;
+    private static bool s_touchStartedOnScrollbar;
     private static float s_touchStartX;
     private static float s_touchStartY;
     private static float s_touchLastX;
@@ -227,13 +259,16 @@ public static partial class ImGuiInputHandler
         ImGuiIOPtr io = ImGui.GetIO();
         bool activeItem = ImGui.IsAnyItemActive();
         int cursor = (int)ImGui.GetMouseCursor();
+        if (s_touchGestureActive && activeItem && IsActiveScrollbarUnderPointer())
+            s_touchStartedOnScrollbar = true;
 
         // Dear ImGui 1.91 cursor values: TextInput=1, ResizeAll=2, and resize cursors=3..6.
         // Keep direct manipulation controls draggable while allowing a swipe over buttons/items
-        // to become a scroll gesture.
+        // to become a scroll gesture. Scrollbar drags keep ImGui's direct handling.
         bool directManipulationCursor = cursor is >= 1 and <= 6;
-        s_touchScrollCancelsActiveItem = activeItem;
-        s_touchScrollEligible = io.WantCaptureMouse
+        bool activeScrollbar = s_touchStartedOnScrollbar;
+        s_touchScrollCancelsActiveItem = activeItem && !activeScrollbar;
+        s_touchScrollEligible = io.WantCaptureMouse && !activeScrollbar
             && (!activeItem || !directManipulationCursor);
 
         float fontSize = MathF.Max(ImGui.GetFontSize(), 1.0f);
@@ -246,6 +281,7 @@ public static partial class ImGuiInputHandler
         s_touchGestureActive = true;
         s_touchScrollPending = true;
         s_touchScrolling = false;
+        s_touchStartedOnScrollbar = false;
         s_touchStartX = s_touchLastX = x;
         s_touchStartY = s_touchLastY = y;
     }
@@ -276,7 +312,15 @@ public static partial class ImGuiInputHandler
             if (distanceSquared >= threshold * threshold)
             {
                 s_touchScrollPending = false;
-                if (s_touchScrollEligible)
+                bool canStartTouchScroll = s_touchScrollEligible;
+                if (canStartTouchScroll && s_touchScrollCancelsActiveItem
+                    && IsActiveScrollbarUnderPointer())
+                {
+                    s_touchStartedOnScrollbar = true;
+                    canStartTouchScroll = false;
+                }
+
+                if (canStartTouchScroll)
                 {
                     s_touchScrolling = true;
                     if (s_touchScrollCancelsActiveItem)
@@ -309,11 +353,31 @@ public static partial class ImGuiInputHandler
             deltaY / s_touchScrollPixelsPerWheelY);
     }
 
+    private static bool IsActiveScrollbarUnderPointer()
+    {
+        uint activeId = GetActiveId();
+        if (activeId == 0)
+            return false;
+
+        Vector2 mousePosition = ImGui.GetIO().MousePos;
+        FindHoveredWindowEx(
+            new NativeImVec2(mousePosition.X, mousePosition.Y),
+            false,
+            out nint hoveredWindow,
+            out _);
+        if (hoveredWindow == nint.Zero)
+            return false;
+
+        return activeId == GetWindowScrollbarId(hoveredWindow, 0)
+            || activeId == GetWindowScrollbarId(hoveredWindow, 1);
+    }
+
     private static void EndTouchGesture()
     {
         s_touchGestureActive = false;
         s_touchScrollPending = false;
         s_touchScrolling = false;
+        s_touchStartedOnScrollbar = false;
     }
 
     private static void DispatchJavaKeyEvent(

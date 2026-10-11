@@ -122,7 +122,10 @@ public static partial class ImGuiInputHandler
             : 1.0f;
         float mouseX = pointer.X * scaleX;
         float mouseY = pointer.Y * scaleY;
-        io.AddMousePosEvent(mouseX, mouseY);
+        bool isTouchMove = !input.IsGenericMotion
+            && (AndroidInput.MotionAction)input.Action == AndroidInput.MotionAction.Move;
+        if (!isTouchMove || !s_touchScrolling)
+            io.AddMousePosEvent(mouseX, mouseY);
 
         if (!input.IsGenericMotion)
         {

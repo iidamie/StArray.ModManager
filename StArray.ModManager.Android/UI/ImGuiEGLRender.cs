@@ -126,6 +126,7 @@ public sealed unsafe class ImGuiEGLRenderer : IImGuiRenderer
 
             // 构建 UI
             self.BuildUI();
+            ImGuiInputHandler.UpdateTouchScrollState();
             ImGuiInputHandler.UpdateIme();
             StArray.ModManager.Android.Native.AndroidJavaInputBridge.UpdateCaptureState();
             // 渲染

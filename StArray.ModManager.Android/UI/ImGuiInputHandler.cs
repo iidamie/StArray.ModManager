@@ -14,6 +14,19 @@ public static partial class ImGuiInputHandler
 
     private static bool s_wantTextInputLast;
     private static int s_javaPrimaryPointerId = -1;
+    private const float TouchScrollStartDistance = 12.0f;
+    private const float InvalidMouseCoordinate = -float.MaxValue;
+    private static bool s_touchGestureActive;
+    private static bool s_touchScrollPending;
+    private static bool s_touchScrolling;
+    private static float s_touchStartX;
+    private static float s_touchStartY;
+    private static float s_touchLastX;
+    private static float s_touchLastY;
+    private static volatile bool s_touchScrollEligible;
+    private static volatile bool s_touchScrollCancelsActiveItem;
+    private static volatile float s_touchScrollPixelsPerWheelX = 1.0f;
+    private static volatile float s_touchScrollPixelsPerWheelY = 1.0f;
 
     /// <summary>
     /// 注册 Java Activity 输入桥接回调。宿主 APK 必须包含 Activity 转发补丁。
@@ -107,11 +120,14 @@ public static partial class ImGuiInputHandler
         float scaleY = input.ViewportHeight > 0
             ? io.DisplaySize.Y / input.ViewportHeight
             : 1.0f;
-        io.AddMousePosEvent(pointer.X * scaleX, pointer.Y * scaleY);
+        float mouseX = pointer.X * scaleX;
+        float mouseY = pointer.Y * scaleY;
+        io.AddMousePosEvent(mouseX, mouseY);
 
         if (!input.IsGenericMotion)
         {
-            DispatchJavaTouchAction(io, input, pointers, pointerCount, actionIndex);
+            DispatchJavaTouchAction(
+                io, input, pointers, pointerCount, actionIndex, mouseX, mouseY);
             return;
         }
 
@@ -125,7 +141,9 @@ public static partial class ImGuiInputHandler
         AndroidInputEventInfo input,
         ReadOnlySpan<AndroidInputPointerInfo> pointers,
         int pointerCount,
-        int actionIndex)
+        int actionIndex,
+        float mouseX,
+        float mouseY)
     {
         AndroidInput.MotionAction action = (AndroidInput.MotionAction)input.Action;
         int actionPointerId = pointers[actionIndex].Id;
@@ -134,9 +152,16 @@ public static partial class ImGuiInputHandler
             case AndroidInput.MotionAction.Down:
             case AndroidInput.MotionAction.PointerDown:
                 if (s_javaPrimaryPointerId < 0 || action == AndroidInput.MotionAction.Down)
+                {
                     s_javaPrimaryPointerId = actionPointerId;
+                    BeginTouchGesture(mouseX, mouseY);
+                }
                 if (actionPointerId == s_javaPrimaryPointerId)
                     io.AddMouseButtonEvent(0, true);
+                break;
+
+            case AndroidInput.MotionAction.Move:
+                UpdateTouchGesture(io, mouseX, mouseY);
                 break;
 
             case AndroidInput.MotionAction.PointerUp:
@@ -164,11 +189,15 @@ public static partial class ImGuiInputHandler
                         io.AddMousePosEvent(
                             pointers[replacementIndex].X * scaleX,
                             pointers[replacementIndex].Y * scaleY);
+                        RebaseTouchGesture(
+                            pointers[replacementIndex].X * scaleX,
+                            pointers[replacementIndex].Y * scaleY);
                     }
                     else
                     {
                         s_javaPrimaryPointerId = -1;
                         io.AddMouseButtonEvent(0, false);
+                        EndTouchGesture();
                     }
                 }
                 break;
@@ -177,8 +206,111 @@ public static partial class ImGuiInputHandler
             case AndroidInput.MotionAction.Cancel:
                 s_javaPrimaryPointerId = -1;
                 io.AddMouseButtonEvent(0, false);
+                EndTouchGesture();
                 break;
         }
+    }
+
+    /// <summary>
+    /// Cache the current frame's gesture target state. Input arrives through the Java bridge on
+    /// the render thread, but this snapshot also keeps gesture classification independent of the
+    /// Activity callback timing.
+    /// </summary>
+    internal static void UpdateTouchScrollState()
+    {
+        if (!IsInitialized)
+            return;
+
+        ImGuiIOPtr io = ImGui.GetIO();
+        bool activeItem = ImGui.IsAnyItemActive();
+        int cursor = (int)ImGui.GetMouseCursor();
+
+        // Dear ImGui 1.91 cursor values: TextInput=1, ResizeAll=2, and resize cursors=3..6.
+        // Keep direct manipulation controls draggable while allowing a swipe over buttons/items
+        // to become a scroll gesture.
+        bool directManipulationCursor = cursor is >= 1 and <= 6;
+        s_touchScrollCancelsActiveItem = activeItem;
+        s_touchScrollEligible = io.WantCaptureMouse
+            && (!activeItem || !directManipulationCursor);
+
+        float fontSize = MathF.Max(ImGui.GetFontSize(), 1.0f);
+        s_touchScrollPixelsPerWheelX = MathF.Max(fontSize * 2.0f, 1.0f);
+        s_touchScrollPixelsPerWheelY = MathF.Max(fontSize * 5.0f, 1.0f);
+    }
+
+    private static void BeginTouchGesture(float x, float y)
+    {
+        s_touchGestureActive = true;
+        s_touchScrollPending = true;
+        s_touchScrolling = false;
+        s_touchStartX = s_touchLastX = x;
+        s_touchStartY = s_touchLastY = y;
+    }
+
+    private static void RebaseTouchGesture(float x, float y)
+    {
+        if (!s_touchGestureActive)
+            return;
+
+        s_touchStartX = s_touchLastX = x;
+        s_touchStartY = s_touchLastY = y;
+        s_touchScrollPending = !s_touchScrolling;
+    }
+
+    private static void UpdateTouchGesture(ImGuiIOPtr io, float x, float y)
+    {
+        if (!s_touchGestureActive)
+            return;
+
+        float deltaX = x - s_touchLastX;
+        float deltaY = y - s_touchLastY;
+        if (s_touchScrollPending)
+        {
+            float totalX = x - s_touchStartX;
+            float totalY = y - s_touchStartY;
+            float distanceSquared = totalX * totalX + totalY * totalY;
+            float threshold = MathF.Max(TouchScrollStartDistance, io.MouseDragThreshold * 2.0f);
+            if (distanceSquared >= threshold * threshold)
+            {
+                s_touchScrollPending = false;
+                if (s_touchScrollEligible)
+                {
+                    s_touchScrolling = true;
+                    if (s_touchScrollCancelsActiveItem)
+                        io.AddMousePosEvent(InvalidMouseCoordinate, InvalidMouseCoordinate);
+                    io.AddMouseButtonEvent(0, false);
+                    if (s_touchScrollCancelsActiveItem)
+                        io.AddMousePosEvent(x, y);
+
+                    float distance = MathF.Sqrt(distanceSquared);
+                    float scrollDistance = MathF.Max(0.0f, distance - threshold);
+                    float scrollFactor = scrollDistance / distance;
+                    AddTouchScrollWheel(io, totalX * scrollFactor, totalY * scrollFactor);
+                }
+            }
+        }
+        else if (s_touchScrolling)
+        {
+            AddTouchScrollWheel(io, deltaX, deltaY);
+        }
+
+        s_touchLastX = x;
+        s_touchLastY = y;
+    }
+
+    private static void AddTouchScrollWheel(ImGuiIOPtr io, float deltaX, float deltaY)
+    {
+        // ImGui scrolls the content opposite to wheel direction, so use the finger delta directly.
+        io.AddMouseWheelEvent(
+            deltaX / s_touchScrollPixelsPerWheelX,
+            deltaY / s_touchScrollPixelsPerWheelY);
+    }
+
+    private static void EndTouchGesture()
+    {
+        s_touchGestureActive = false;
+        s_touchScrollPending = false;
+        s_touchScrolling = false;
     }
 
     private static void DispatchJavaKeyEvent(

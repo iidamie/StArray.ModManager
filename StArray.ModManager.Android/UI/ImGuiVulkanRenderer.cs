@@ -353,6 +353,7 @@ public sealed unsafe class ImGuiVulkanRenderer : IImGuiRenderer
             StArray.ModManager.Android.Native.AndroidJavaInputBridge.DispatchPendingImGuiEvents();
             ImGui.NewFrame();
             self.BuildUI();
+            ImGuiInputHandler.UpdateTouchScrollState();
             ImGuiInputHandler.UpdateIme();
             StArray.ModManager.Android.Native.AndroidJavaInputBridge.UpdateCaptureState();
             ImGui.Render();

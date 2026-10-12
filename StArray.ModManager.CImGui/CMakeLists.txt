@@ -14,6 +14,7 @@ endif()
 #general settings
 file(GLOB IMGUI_BASE_SOURCES
     cimgui.cpp
+    cimgui_touch_scroll.cpp
     imgui/imgui.cpp
     imgui/imgui_draw.cpp
     imgui/imgui_demo.cpp

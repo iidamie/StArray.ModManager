@@ -26,4 +26,4 @@ Register the Mod table, log child, main window, and scrollable mod-settings wind
 
 ## Verification
 
-The Android AAR from Actions run `38269738802` contains the custom export, confirmed with `nm -D`; it is the modified artifact that this change removes. The follow-up Actions build must pass Android AAR, Android DLL, and Windows jobs. CI does not simulate touch, so device behavior still requires a device check.
+The Android AAR from Actions run `38269738802` contains the custom export, confirmed with `nm -D`; it is the modified artifact that this change removes. Actions run `38271881889` passes Android AAR, Android DLL, and Windows jobs. Its AAR is byte-identical to baseline run `38151564912` (SHA-256 `fbc3c9e5ece3de4d31e5d7abb1d81ab3e959924bdf958757ebd612e10e76f95c`). CI does not simulate touch, so device behavior still requires a device check.

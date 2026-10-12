@@ -6,6 +6,7 @@ using ImGuiNET;
 using StArray.ModManager.Inspector;
 using StArray.ModManager.Resources;
 using StArray.ModManager.Runtime;
+using StArray.ModManager.UI;
 
 namespace StArray.ModManager.Manager;
 
@@ -70,6 +71,7 @@ partial class ModManagerUI
             {
                 SaveSettings(mod, settings);
             }
+            ImGuiTouchScrollWhitelist.RegisterCurrentWindowIfScrollable();
         }
         ImGui.End();
 

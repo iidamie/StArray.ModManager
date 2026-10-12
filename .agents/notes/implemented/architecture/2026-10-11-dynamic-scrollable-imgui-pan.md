@@ -2,6 +2,8 @@
 
 Status: implemented
 
+Superseded by [managed touch-scroll region registration](2026-10-12-managed-imgui-touch-scroll-regions.md); this note records the earlier CImGui-export approach.
+
 ## Problem
 
 按两个已知列表矩形登记触控滚动，无法覆盖其他通过 `BeginChild`、表格或窗口创建的可滚动区域。全局按 `WantCaptureMouse` 启用又会让标题栏、非滚动窗口和普通组件被误判为平移。

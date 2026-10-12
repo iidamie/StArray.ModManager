@@ -352,6 +352,7 @@ public sealed unsafe class ImGuiVulkanRenderer : IImGuiRenderer
 
             StArray.ModManager.Android.Native.AndroidJavaInputBridge.DispatchPendingImGuiEvents();
             ImGui.NewFrame();
+            StArray.ModManager.UI.ImGuiTouchScrollWhitelist.BeginFrame();
             self.BuildUI();
             ImGuiInputHandler.UpdateTouchScrollState();
             ImGuiInputHandler.UpdateIme();

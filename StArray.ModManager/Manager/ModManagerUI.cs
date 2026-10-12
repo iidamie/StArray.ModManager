@@ -10,6 +10,7 @@ using StArray.ModManager.Mono;
 using StArray.ModManager.Resources;
 using StArray.ModManager.Runtime;
 using StArray.ModManager.Behaviours;
+using StArray.ModManager.UI;
 
 namespace StArray.ModManager.Manager;
 
@@ -288,6 +289,7 @@ public partial class ModManagerUI
                             else
                                 ImGui.TextDisabled("—");
                         }
+                        ImGuiTouchScrollWhitelist.RegisterCurrentWindowIfScrollable();
                         ImGui.EndTable();
                     }
                     ImGui.EndTabItem();
@@ -327,6 +329,7 @@ public partial class ModManagerUI
                                         ImGui.SetScrollHereY(1f);
                                 }
                                 catch { /* swallow render errors */ }
+                                ImGuiTouchScrollWhitelist.RegisterCurrentWindowIfScrollable();
                             }
                             ImGui.EndChild();
                             ImGui.EndTabItem();
@@ -386,6 +389,7 @@ public partial class ModManagerUI
                 ImGui.EndTabBar();
             }
             ImGui.PopTextWrapPos();
+        ImGuiTouchScrollWhitelist.RegisterCurrentWindowIfScrollable();
         ImGui.End();
     }
 

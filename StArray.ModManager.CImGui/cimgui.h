@@ -4525,7 +4525,6 @@ CIMGUI_API void ImGuiContext_destroy(ImGuiContext* self);
 CIMGUI_API ImGuiWindow* ImGuiWindow_ImGuiWindow(ImGuiContext* context,const char* name);
 CIMGUI_API void ImGuiWindow_destroy(ImGuiWindow* self);
 CIMGUI_API ImGuiID ImGuiWindow_GetID_Str(ImGuiWindow* self,const char* str,const char* str_end);
-CIMGUI_API int ImGuiWindow_GetTouchScrollAxes(ImGuiWindow* window);
 CIMGUI_API ImGuiID ImGuiWindow_GetID_Ptr(ImGuiWindow* self,const void* ptr);
 CIMGUI_API ImGuiID ImGuiWindow_GetID_Int(ImGuiWindow* self,int n);
 CIMGUI_API ImGuiID ImGuiWindow_GetIDFromPos(ImGuiWindow* self,const ImVec2 p_abs);

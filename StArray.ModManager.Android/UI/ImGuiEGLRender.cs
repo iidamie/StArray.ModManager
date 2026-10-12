@@ -123,6 +123,7 @@ public sealed unsafe class ImGuiEGLRenderer : IImGuiRenderer
 
             StArray.ModManager.Android.Native.AndroidJavaInputBridge.DispatchPendingImGuiEvents();
             ImGui.NewFrame();
+            StArray.ModManager.UI.ImGuiTouchScrollWhitelist.BeginFrame();
 
             // 构建 UI
             self.BuildUI();

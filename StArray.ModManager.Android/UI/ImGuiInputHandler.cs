@@ -3,6 +3,7 @@ using ImGuiNET;
 using StArray.ModManager.Android.Native;
 using StArray.ModManager.Manager;
 using StArray.ModManager.Native;
+using StArray.ModManager.UI;
 
 namespace StArray.ModManager.Android.UI;
 
@@ -49,10 +50,6 @@ public static partial class ImGuiInputHandler
         CallingConvention = CallingConvention.Cdecl)]
     private static extern uint GetWindowResizeBorderId(nint window, int direction);
 
-    [DllImport("cimgui", EntryPoint = "ImGuiWindow_GetTouchScrollAxes",
-        CallingConvention = CallingConvention.Cdecl)]
-    private static extern int GetWindowTouchScrollAxes(nint window);
-
     [DllImport("cimgui", EntryPoint = "ImGuiWindow_GetID_Str",
         CallingConvention = CallingConvention.Cdecl)]
     private static extern uint GetWindowId(
@@ -75,7 +72,6 @@ public static partial class ImGuiInputHandler
     private static bool s_touchStartedOnScrollbar;
     private static bool s_touchStartedOnWindowMove;
     private static bool s_touchStartedOnWindowResize;
-    private static bool s_touchScrollApiAvailable = true;
     private static float s_touchStartX;
     private static float s_touchStartY;
     private static float s_touchLastX;
@@ -288,6 +284,7 @@ public static partial class ImGuiInputHandler
         if (!IsInitialized)
             return;
 
+        ImGuiTouchScrollWhitelist.PublishFrame();
         ImGuiIOPtr io = ImGui.GetIO();
         if (s_touchGestureActive && !s_touchGestureClassified)
         {
@@ -300,7 +297,7 @@ public static partial class ImGuiInputHandler
             s_touchStartedOnWindowResize = activeItem && IsActiveWindowResize(startWindow);
             s_touchScrollableAxes = startWindow == nint.Zero
                 ? 0
-                : TryGetTouchScrollAxes(startWindow);
+                : ImGuiTouchScrollWhitelist.GetAxesAt(s_touchStartX, s_touchStartY);
 
             // Dear ImGui 1.91 cursor values: TextInput=1, ResizeAll=2, and resize cursors=3..6.
             // Classify once at touch-down so leaving a slider or text field cannot turn its drag
@@ -447,25 +444,6 @@ public static partial class ImGuiInputHandler
             out nint hoveredWindow,
             out _);
         return hoveredWindow;
-    }
-
-    private static int TryGetTouchScrollAxes(nint window)
-    {
-        if (!s_touchScrollApiAvailable)
-            return 0;
-
-        try
-        {
-            return GetWindowTouchScrollAxes(window);
-        }
-        catch (EntryPointNotFoundException)
-        {
-            s_touchScrollApiAvailable = false;
-            Logger.Error(nameof(ImGuiInputHandler),
-                "The loaded cimgui library does not export ImGuiWindow_GetTouchScrollAxes. " +
-                "Install the matching Android AAR; touch scrolling is disabled for this process.");
-            return 0;
-        }
     }
 
     private static bool IsActiveScrollbar(nint window)

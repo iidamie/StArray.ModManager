@@ -24,6 +24,7 @@ ImGui.NET 没有暴露任意 `ImGuiWindow` 的 `ScrollMax`。CImGui 增加一个
 - 不可滚动窗口、禁用滚轮的窗口以及没有对应滚动轴的滑动方向保持原有输入行为。
 - CImGui 增加一个 C++ 查询文件和一个 CMake 源条目；Android JNI/输入 Hook 仍未改动。
 - 查询依赖 ImGui 内部的 `ScrollMax` 和当前滚轮路由规则；升级 Dear ImGui 时要重新对照 `FindBestWheelingWindow`，并同步调整导出。
+- Android 托管 DLL 与宿主 AAR 必须配套：若旧 `cimgui.so` 缺少查询导出，输入层记录一次错误、停用触摸滚动并继续渲染当前帧；替换为包含该导出的 AAR 后才启用滚动。
 
 ## Verification
 

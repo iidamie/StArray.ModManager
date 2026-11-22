@@ -96,11 +96,12 @@
     <data name="ModInstall_ImportHint" xml:space="preserve"><value>If your download is not visible, open Import folder, use a file manager to copy your .zip or .dll file to {0}, then refresh.</value></data>
     <data name="ModInstall_IdConflict" xml:space="preserve"><value>Mod ID {0} conflicts with an installed entry. The update target is ambiguous.</value></data>
     <data name="ModInstall_UpdateTitle" xml:space="preserve"><value>Replace Installed Mod</value></data>
-    <data name="ModInstall_UpdatePrompt" xml:space="preserve"><value>Replace {0} version {1} with {2}. The update takes effect after you restart the game. Settings saved by the manager are kept.</value></data>
+    <data name="ModInstall_UpdatePrompt" xml:space="preserve"><value>Replace {0} version {1} with {2}. Restart the game to apply the update. Only files included in the new package are replaced.</value></data>
     <data name="ModInstall_UpdateConfirm" xml:space="preserve"><value>Replace</value></data>
     <data name="ModInstall_UpdateQueued" xml:space="preserve"><value>The update for {0} is ready. Restart the game to apply it.</value></data>
     <data name="ModInstall_UpdateAlreadyQueued" xml:space="preserve"><value>An update for {0} is already queued. Restart the game first.</value></data>
     <data name="ModInstall_UpdateTargetInvalid" xml:space="preserve"><value>Could not verify the installed folder or entry DLL for mod {0}.</value></data>
     <data name="ModInstall_UpdateBackup" xml:space="preserve"><value>Could not restore the previous version. The backup remains at {0}. Error: {1}</value></data>
     <data name="ModInstall_UpdateApplied" xml:space="preserve"><value>Applied the update for mod {0}.</value></data>
+    <data name="ModInstall_UpdatePathConflict" xml:space="preserve"><value>Cannot update {0} because a file and a folder use the same path.</value></data>
 </root>

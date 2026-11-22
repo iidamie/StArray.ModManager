@@ -10,6 +10,7 @@ namespace StArray.ModManager.Runtime;
 internal static class ModUpdateQueue
 {
     private const string ManifestName = "update.json";
+    private static readonly EnumerationOptions AllEntries = new() { AttributesToSkip = 0, IgnoreInaccessible = false };
 
     private sealed record Update(string ModId, string OldFolder, string OldEntry, string NewEntry,
         string OldEntryHash, string NewEntryHash);
@@ -88,11 +89,13 @@ internal static class ModUpdateQueue
         string oldPath = Path.Combine(mods, update.OldFolder);
         string newPath = Path.Combine(mods, newFolder);
         string staged = Path.Combine(request, "content");
+        string ready = Path.Combine(request, "ready");
         string backup = Path.Combine(request, "backup");
+        bool backedUp = Directory.Exists(backup);
 
-        // After an interruption, an absent staged directory and a valid destination mean the
-        // final move already succeeded. It is now safe to remove the old files.
-        if (!Directory.Exists(staged) && Directory.Exists(backup))
+        // Moving ready into place completes the update. Also recognize an interrupted
+        // cleanup from older requests, where content was moved into place directly.
+        if (backedUp && !Directory.Exists(ready) && Directory.Exists(newPath))
         {
             VerifyEntry(newPath, update.NewEntry, update.NewEntryHash, update.ModId);
             ModInstallPackage.DeleteStagingDirectory(request);
@@ -101,19 +104,18 @@ internal static class ModUpdateQueue
 
         try
         {
-            bool backedUp = Directory.Exists(backup);
             string previous = backedUp ? backup : oldPath;
             VerifyEntry(previous, update.OldEntry, update.OldEntryHash, update.ModId);
             VerifyEntry(staged, update.NewEntry, update.NewEntryHash, update.ModId);
             EnsureDestinationAvailable(mods, backedUp ? null : oldPath, newFolder);
 
-            string settings = Path.Combine(previous, "settings.json");
-            if (File.Exists(settings))
-                File.Copy(settings, Path.Combine(staged, "settings.json"), overwrite: true);
+            if (!backedUp || !Directory.Exists(ready))
+                PrepareMergedDirectory(previous, staged, request, ready);
+            VerifyEntry(ready, update.NewEntry, update.NewEntryHash, update.ModId);
 
             if (!backedUp)
                 Directory.Move(oldPath, backup);
-            Directory.Move(staged, newPath);
+            Directory.Move(ready, newPath);
         }
         catch
         {
@@ -137,6 +139,81 @@ internal static class ModUpdateQueue
 
         ModInstallPackage.DeleteStagingDirectory(request);
         Logger.Info(nameof(ModUpdateQueue), L10n.Get("ModInstall_UpdateApplied", update.ModId));
+    }
+
+    private static void PrepareMergedDirectory(string previous, string package, string request, string ready)
+    {
+        string working = Path.Combine(request, "merge");
+        if (Directory.Exists(working))
+            Directory.Delete(working, recursive: true);
+        if (Directory.Exists(ready))
+            Directory.Delete(ready, recursive: true);
+
+        Directory.CreateDirectory(working);
+        CopyMissingEntries(new DirectoryInfo(package), working, working);
+        CopyMissingEntries(new DirectoryInfo(previous), working, working);
+        Directory.Move(working, ready);
+    }
+
+    private static void CopyMissingEntries(DirectoryInfo source, string destination, string root)
+    {
+        foreach (FileSystemInfo entry in source.EnumerateFileSystemInfos("*", AllEntries))
+        {
+            string target = Path.Combine(destination, entry.Name);
+            FileAttributes attributes = entry.Attributes;
+            bool isDirectory = IsRegularDirectory(attributes);
+            FileAttributes? targetAttributes = GetAttributesIfPresent(target);
+
+            if (targetAttributes is { } existing)
+            {
+                // Replacing a directory with a file would discard unrelated children.
+                if (IsRegularDirectory(existing) != isDirectory)
+                    throw new IOException(L10n.Get("ModInstall_UpdatePathConflict", Path.GetRelativePath(root, target)));
+                if (!isDirectory)
+                    continue;
+            }
+
+            if (isDirectory)
+            {
+                Directory.CreateDirectory(target);
+                CopyMissingEntries((DirectoryInfo)entry, target, root);
+            }
+            else if ((attributes & FileAttributes.ReparsePoint) == 0)
+            {
+                File.Copy(entry.FullName, target);
+            }
+            else if (entry.LinkTarget is { } link)
+            {
+                // Preserve links themselves without traversing their targets.
+                if ((attributes & FileAttributes.Directory) != 0)
+                    Directory.CreateSymbolicLink(target, link);
+                else
+                    File.CreateSymbolicLink(target, link);
+            }
+            else
+            {
+                throw new IOException(L10n.Get("ModInstall_UpdatePathConflict", Path.GetRelativePath(root, target)));
+            }
+        }
+    }
+
+    private static bool IsRegularDirectory(FileAttributes attributes) =>
+        (attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) == FileAttributes.Directory;
+
+    private static FileAttributes? GetAttributesIfPresent(string path)
+    {
+        try
+        {
+            return File.GetAttributes(path);
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
     }
 
     private static string GetDestinationName(Update update)

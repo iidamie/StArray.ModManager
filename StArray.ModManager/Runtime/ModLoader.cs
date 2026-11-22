@@ -107,14 +107,18 @@ public class ModLoader
     /// <summary>
     /// 从文件夹发现 Mod 信息
     /// </summary>
-    private ModEntry? DiscoverMod(string folderPath)
+    private ModEntry? DiscoverMod(string folderPath, string? entryDll = null)
     {
         var dirName = Path.GetFileName(folderPath);
 
-        var entryDll = Directory.GetFiles(folderPath, "*.dll")
-            .FirstOrDefault(f => Path.GetFileNameWithoutExtension(f) == dirName)
-            ?? Directory.GetFiles(folderPath, "*.dll")
-                .FirstOrDefault(f => !Path.GetFileNameWithoutExtension(f).Equals("StArray.ModManager", StringComparison.OrdinalIgnoreCase));
+        if (entryDll == null)
+        {
+            var dlls = Directory.EnumerateFiles(folderPath)
+                .Where(f => Path.GetExtension(f).Equals(".dll", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            entryDll = dlls.FirstOrDefault(f => Path.GetFileNameWithoutExtension(f) == dirName)
+                ?? dlls.FirstOrDefault(f => !Path.GetFileNameWithoutExtension(f).Equals("StArray.ModManager", StringComparison.OrdinalIgnoreCase));
+        }
 
         if (entryDll == null) return null;
 
@@ -296,6 +300,38 @@ public class ModLoader
             UnloadMod(mod);
         else
             LoadMod(mod);
+    }
+
+    internal ModEntry InstallMod(ModInstallPackage package)
+    {
+        ModEntry? mod = null;
+        foreach (string dll in package.GetEntryCandidates())
+        {
+            mod = DiscoverMod(package.ModDirectory, dll);
+            if (mod != null)
+                break;
+        }
+
+        if (mod?.EntryPoint == null || string.IsNullOrWhiteSpace(mod.Id))
+            throw new InvalidDataException(L10n.Get("ModInstall_NoEntry"));
+
+        if (_mods.Any(existing => string.Equals(existing.Id, mod.Id, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException(L10n.Get("ModInstall_AlreadyInstalled", mod.Id));
+
+        string entryName = Path.GetFileName(mod.EntryPoint);
+        string folderName = Path.GetFileNameWithoutExtension(entryName);
+        if (!ModInstallPackage.IsSafeName(folderName))
+            throw new InvalidDataException(L10n.Get("ModInstall_NoEntry"));
+
+        // Name the directory after the entry DLL so the regular scanner chooses it after restart.
+        string destination = Path.Combine(ModsDirectory, folderName);
+        if (Directory.Exists(destination) || File.Exists(destination))
+            throw new IOException(L10n.Get("ModInstall_FolderExists", folderName));
+
+        Directory.Move(package.ModDirectory, destination);
+        mod.FolderPath = destination;
+        mod.EntryPoint = Path.Combine(destination, entryName);
+        return AddMod(mod);
     }
 
     /// <summary>

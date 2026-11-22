@@ -157,27 +157,57 @@ partial class ModManagerUI
         ImGui.PopStyleVar();
     }
 
-    private void RenderAddModPopup()
+    private void RenderAddModButton()
     {
-        if (!_showAddModPopup) return;
-
-        ImGui.OpenPopup(L10n.Get("AddMod_Title"));
-
-        var center = ImGui.GetMainViewport().GetCenter();
-        ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
-
-        if (ImGui.BeginPopupModal(L10n.Get("AddMod_Title"), ref _showAddModPopup,
-            ImGuiWindowFlags.AlwaysAutoResize))
+        ImGui.BeginDisabled(_pickModFile == null || _modInstallTask != null);
+        if (ImGui.Button(FontAwesome7.Plus + " " + L10n.Get("Btn_AddMod")) && _pickModFile is { } picker)
         {
-            ImGui.TextColored(new Vector4(1f, 0.6f, 0.2f, 1f), FontAwesome7.Wrench + " 未实现");
-            ImGui.Spacing();
-            ImGui.Text(L10n.Get("AddMod_NotImplDetail"));
-
-            ImGui.Spacing();
-            if (ImGui.Button(L10n.Get("Btn_Close")))
-                _showAddModPopup = false;
-
-            ImGui.EndPopup();
+            _modInstallTask = PrepareModInstallAsync(picker);
         }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(L10n.Get("ModInstall_FileHint"));
+        ImGui.EndDisabled();
+
+        if (_modInstallTask != null)
+        {
+            ImGui.SameLine();
+            ImGui.TextDisabled(L10n.Get("ModInstall_InProgress"));
+        }
+    }
+
+    private async Task<ModInstallPackage?> PrepareModInstallAsync(Func<Task<ModInstallFile?>> picker)
+    {
+        ModInstallFile? file = await picker().ConfigureAwait(false);
+        if (file == null)
+            return null;
+
+        using (file.Content)
+            return await Task.Run(() => ModInstallPackage.Prepare(_modManager.ModsDirectory, file))
+                .ConfigureAwait(false);
+    }
+
+    private void FinishModInstall()
+    {
+        if (_modInstallTask is not { IsCompleted: true } task)
+            return;
+
+        _modInstallTask = null;
+        try
+        {
+            using var package = task.GetAwaiter().GetResult();
+            if (package == null)
+                return;
+
+            ModEntry mod = _modManager.InstallMod(package);
+            _selectedMod = mod;
+            _toastMessage = FontAwesome7.CircleCheck + " " + L10n.Get("ModInstall_Success", mod.Name);
+        }
+        catch (Exception exception)
+        {
+            Logger.Error(nameof(ModManagerUI), $"Install mod: {exception}");
+            _toastMessage = FontAwesome7.CircleXmark + " " + L10n.Get("ModInstall_Failed", exception.Message);
+        }
+        _toastTimer = 5f;
     }
 }

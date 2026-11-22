@@ -1,9 +1,7 @@
-using System.Runtime.InteropServices;
 using ImGuiNET;
 using StArray.ModManager.Android.Native;
 using StArray.ModManager.Manager;
 using StArray.ModManager.Native;
-using StArray.ModManager.UI;
 
 namespace StArray.ModManager.Android.UI;
 
@@ -13,75 +11,11 @@ public static partial class ImGuiInputHandler
     private const int AndroidMotionSourceMask = 0x0000FF00;
     private const int AndroidTouchscreenSource = 0x00001000;
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct NativeImVec2
-    {
-        public float X;
-        public float Y;
-
-        public NativeImVec2(float x, float y)
-        {
-            X = x;
-            Y = y;
-        }
-    }
-
-    [DllImport("cimgui", EntryPoint = "igFindHoveredWindowEx",
-        CallingConvention = CallingConvention.Cdecl)]
-    private static extern void FindHoveredWindowEx(
-        NativeImVec2 position,
-        [MarshalAs(UnmanagedType.I1)] bool findFirstAndInAnyViewport,
-        out nint hoveredWindow,
-        out nint hoveredWindowUnderMovingWindow);
-
-    [DllImport("cimgui", EntryPoint = "igGetActiveID",
-        CallingConvention = CallingConvention.Cdecl)]
-    private static extern uint GetActiveId();
-
-    [DllImport("cimgui", EntryPoint = "igGetWindowScrollbarID",
-        CallingConvention = CallingConvention.Cdecl)]
-    private static extern uint GetWindowScrollbarId(nint window, int axis);
-
-    [DllImport("cimgui", EntryPoint = "igGetWindowResizeCornerID",
-        CallingConvention = CallingConvention.Cdecl)]
-    private static extern uint GetWindowResizeCornerId(nint window, int corner);
-
-    [DllImport("cimgui", EntryPoint = "igGetWindowResizeBorderID",
-        CallingConvention = CallingConvention.Cdecl)]
-    private static extern uint GetWindowResizeBorderId(nint window, int direction);
-
-    [DllImport("cimgui", EntryPoint = "ImGuiWindow_GetID_Str",
-        CallingConvention = CallingConvention.Cdecl)]
-    private static extern uint GetWindowId(
-        nint window,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string id,
-        nint idEnd);
-
     /// <summary>ImGui 上下文就绪后由渲染器设置</summary>
     public static bool IsInitialized { get; set; }
-    
 
     private static bool s_wantTextInputLast;
     private static int s_javaPrimaryPointerId = -1;
-    private const float TouchScrollStartDistance = 12.0f;
-    private const float InvalidMouseCoordinate = -float.MaxValue;
-    private static bool s_touchGestureActive;
-    private static bool s_touchGestureClassified;
-    private static bool s_touchScrollPending;
-    private static bool s_touchScrolling;
-    private static bool s_touchStartedOnScrollbar;
-    private static bool s_touchStartedOnWindowMove;
-    private static bool s_touchStartedOnWindowResize;
-    private static float s_touchStartX;
-    private static float s_touchStartY;
-    private static float s_touchLastX;
-    private static float s_touchLastY;
-    private static volatile bool s_touchScrollEligible;
-    private static volatile int s_touchScrollableAxes;
-    private static int s_touchScrollAxis = -1;
-    private static volatile bool s_touchScrollCancelsActiveItem;
-    private static volatile float s_touchScrollPixelsPerWheelX = 1.0f;
-    private static volatile float s_touchScrollPixelsPerWheelY = 1.0f;
 
     /// <summary>
     /// 注册 Java Activity 输入桥接回调。宿主 APK 必须包含 Activity 转发补丁。
@@ -177,11 +111,6 @@ public static partial class ImGuiInputHandler
             : 1.0f;
         float mouseX = pointer.X * scaleX;
         float mouseY = pointer.Y * scaleY;
-        bool isTouchMove = !input.IsGenericMotion
-            && (AndroidInput.MotionAction)input.Action == AndroidInput.MotionAction.Move;
-        if (!isTouchMove || !s_touchScrolling)
-            io.AddMousePosEvent(mouseX, mouseY);
-
         if (!input.IsGenericMotion)
         {
             bool allowTouchScroll = pointerCount == 1
@@ -192,6 +121,7 @@ public static partial class ImGuiInputHandler
             return;
         }
 
+        io.AddMousePosEvent(mouseX, mouseY);
         UpdateJavaMouseButtons(io, input.ButtonState);
         if (input.HorizontalScroll != 0.0f || input.VerticalScroll != 0.0f)
             io.AddMouseWheelEvent(input.HorizontalScroll, input.VerticalScroll);
@@ -209,6 +139,10 @@ public static partial class ImGuiInputHandler
     {
         AndroidInput.MotionAction action = (AndroidInput.MotionAction)input.Action;
         int actionPointerId = pointers[actionIndex].Id;
+        if (action == AndroidInput.MotionAction.Move && allowTouchScroll && HandleTouchScrollMove(io, mouseX, mouseY))
+            return;
+
+        io.AddMousePosEvent(mouseX, mouseY);
         switch (action)
         {
             case AndroidInput.MotionAction.Down:
@@ -216,16 +150,14 @@ public static partial class ImGuiInputHandler
                 if (s_javaPrimaryPointerId < 0 || action == AndroidInput.MotionAction.Down)
                 {
                     s_javaPrimaryPointerId = actionPointerId;
-                    if (allowTouchScroll)
+                    EndTouchGesture();
+                    if (allowTouchScroll && action == AndroidInput.MotionAction.Down)
                         BeginTouchGesture(mouseX, mouseY);
                 }
                 if (actionPointerId == s_javaPrimaryPointerId)
                     io.AddMouseButtonEvent(0, true);
-                break;
-
-            case AndroidInput.MotionAction.Move:
-                if (allowTouchScroll)
-                    UpdateTouchGesture(io, mouseX, mouseY);
+                if (action == AndroidInput.MotionAction.PointerDown)
+                    EndTouchGesture();
                 break;
 
             case AndroidInput.MotionAction.PointerUp:
@@ -253,9 +185,7 @@ public static partial class ImGuiInputHandler
                         io.AddMousePosEvent(
                             pointers[replacementIndex].X * scaleX,
                             pointers[replacementIndex].Y * scaleY);
-                        RebaseTouchGesture(
-                            pointers[replacementIndex].X * scaleX,
-                            pointers[replacementIndex].Y * scaleY);
+                        EndTouchGesture();
                     }
                     else
                     {
@@ -273,224 +203,6 @@ public static partial class ImGuiInputHandler
                 EndTouchGesture();
                 break;
         }
-    }
-
-    /// <summary>
-    /// Resolve the touch-down target once after ImGui processes the press. This keeps the gesture
-    /// classification stable even when later pointer positions cross other controls.
-    /// </summary>
-    internal static void UpdateTouchScrollState()
-    {
-        if (!IsInitialized)
-            return;
-
-        ImGuiTouchScrollWhitelist.PublishFrame();
-        ImGuiIOPtr io = ImGui.GetIO();
-        if (s_touchGestureActive && !s_touchGestureClassified)
-        {
-            bool activeItem = ImGui.IsAnyItemActive();
-            int cursor = (int)ImGui.GetMouseCursor();
-            nint startWindow = FindHoveredWindowAt(s_touchStartX, s_touchStartY);
-
-            s_touchStartedOnScrollbar = activeItem && IsActiveScrollbar(startWindow);
-            s_touchStartedOnWindowMove = activeItem && IsActiveWindowMove(startWindow);
-            s_touchStartedOnWindowResize = activeItem && IsActiveWindowResize(startWindow);
-            s_touchScrollableAxes = startWindow == nint.Zero
-                ? 0
-                : ImGuiTouchScrollWhitelist.GetAxesAt(s_touchStartX, s_touchStartY);
-
-            // Dear ImGui 1.91 cursor values: TextInput=1, ResizeAll=2, and resize cursors=3..6.
-            // Classify once at touch-down so leaving a slider or text field cannot turn its drag
-            // into a scroll. Scrollbars, window moves, and window resizing keep their native path.
-            bool directManipulationCursor = cursor is >= 1 and <= 6;
-            bool directImGuiDrag = s_touchStartedOnScrollbar
-                || s_touchStartedOnWindowMove
-                || s_touchStartedOnWindowResize
-                || (activeItem && directManipulationCursor);
-            s_touchScrollCancelsActiveItem = activeItem && !directImGuiDrag;
-            s_touchScrollEligible = startWindow != nint.Zero
-                && s_touchScrollableAxes != 0
-                && io.WantCaptureMouse
-                && !directImGuiDrag;
-            s_touchGestureClassified = true;
-        }
-
-        float fontSize = MathF.Max(ImGui.GetFontSize(), 1.0f);
-        s_touchScrollPixelsPerWheelX = MathF.Max(fontSize * 2.0f, 1.0f);
-        s_touchScrollPixelsPerWheelY = MathF.Max(fontSize * 5.0f, 1.0f);
-        TryStartTouchScroll(io);
-    }
-
-    private static void BeginTouchGesture(float x, float y)
-    {
-        s_touchGestureActive = true;
-        s_touchGestureClassified = false;
-        s_touchScrollPending = true;
-        s_touchScrolling = false;
-        s_touchStartedOnScrollbar = false;
-        s_touchStartedOnWindowMove = false;
-        s_touchStartedOnWindowResize = false;
-        s_touchScrollEligible = false;
-        s_touchScrollableAxes = 0;
-        s_touchScrollAxis = -1;
-        s_touchScrollCancelsActiveItem = false;
-        s_touchStartX = s_touchLastX = x;
-        s_touchStartY = s_touchLastY = y;
-    }
-
-    private static void RebaseTouchGesture(float x, float y)
-    {
-        if (!s_touchGestureActive)
-            return;
-
-        s_touchStartX = s_touchLastX = x;
-        s_touchStartY = s_touchLastY = y;
-        if (!s_touchScrolling)
-        {
-            s_touchGestureClassified = false;
-            s_touchScrollPending = true;
-            s_touchStartedOnScrollbar = false;
-            s_touchStartedOnWindowMove = false;
-            s_touchStartedOnWindowResize = false;
-            s_touchScrollEligible = false;
-            s_touchScrollableAxes = 0;
-            s_touchScrollAxis = -1;
-            s_touchScrollCancelsActiveItem = false;
-        }
-    }
-
-    private static void UpdateTouchGesture(ImGuiIOPtr io, float x, float y)
-    {
-        if (!s_touchGestureActive)
-            return;
-
-        float deltaX = x - s_touchLastX;
-        float deltaY = y - s_touchLastY;
-        if (s_touchScrollPending)
-        {
-            float totalX = x - s_touchStartX;
-            float totalY = y - s_touchStartY;
-            TryStartTouchScroll(io, totalX, totalY, x, y);
-        }
-        else if (s_touchScrolling)
-        {
-            AddTouchScrollWheel(io, deltaX, deltaY);
-        }
-
-        s_touchLastX = x;
-        s_touchLastY = y;
-    }
-
-    private static void TryStartTouchScroll(ImGuiIOPtr io)
-        => TryStartTouchScroll(
-            io,
-            s_touchLastX - s_touchStartX,
-            s_touchLastY - s_touchStartY,
-            s_touchLastX,
-            s_touchLastY);
-
-    private static void TryStartTouchScroll(
-        ImGuiIOPtr io,
-        float totalX,
-        float totalY,
-        float currentX,
-        float currentY)
-    {
-        if (!s_touchGestureActive || !s_touchGestureClassified || !s_touchScrollPending)
-            return;
-
-        float distanceSquared = totalX * totalX + totalY * totalY;
-        float threshold = MathF.Max(TouchScrollStartDistance, io.MouseDragThreshold * 2.0f);
-        if (distanceSquared < threshold * threshold)
-            return;
-
-        s_touchScrollPending = false;
-        if (!s_touchScrollEligible)
-            return;
-
-        int axis = MathF.Abs(totalX) > MathF.Abs(totalY) ? 0 : 1;
-        if ((s_touchScrollableAxes & (1 << axis)) == 0)
-            return;
-
-        s_touchScrolling = true;
-        s_touchScrollAxis = axis;
-        bool cancelActiveItem = s_touchScrollCancelsActiveItem || ImGui.IsAnyItemActive();
-        if (cancelActiveItem)
-            io.AddMousePosEvent(InvalidMouseCoordinate, InvalidMouseCoordinate);
-        io.AddMouseButtonEvent(0, false);
-        if (cancelActiveItem)
-            io.AddMousePosEvent(currentX, currentY);
-
-        float distance = MathF.Sqrt(distanceSquared);
-        float scrollDistance = MathF.Max(0.0f, distance - threshold);
-        float scrollFactor = scrollDistance / distance;
-        AddTouchScrollWheel(io, totalX * scrollFactor, totalY * scrollFactor);
-    }
-
-    private static void AddTouchScrollWheel(ImGuiIOPtr io, float deltaX, float deltaY)
-    {
-        // ImGui scrolls the content opposite to wheel direction, so use the finger delta directly.
-        if (s_touchScrollAxis == 0)
-            io.AddMouseWheelEvent(deltaX / s_touchScrollPixelsPerWheelX, 0.0f);
-        else if (s_touchScrollAxis == 1)
-            io.AddMouseWheelEvent(0.0f, deltaY / s_touchScrollPixelsPerWheelY);
-    }
-
-    private static nint FindHoveredWindowAt(float x, float y)
-    {
-        FindHoveredWindowEx(
-            new NativeImVec2(x, y),
-            false,
-            out nint hoveredWindow,
-            out _);
-        return hoveredWindow;
-    }
-
-    private static bool IsActiveScrollbar(nint window)
-    {
-        uint activeId = GetActiveId();
-        if (activeId == 0 || window == nint.Zero)
-            return false;
-
-        return activeId == GetWindowScrollbarId(window, 0)
-            || activeId == GetWindowScrollbarId(window, 1);
-    }
-
-    private static bool IsActiveWindowMove(nint window)
-    {
-        uint activeId = GetActiveId();
-        if (activeId == 0 || window == nint.Zero)
-            return false;
-
-        return activeId == GetWindowId(window, "#MOVE", nint.Zero);
-    }
-
-    private static bool IsActiveWindowResize(nint window)
-    {
-        uint activeId = GetActiveId();
-        if (activeId == 0 || window == nint.Zero)
-            return false;
-
-        for (int corner = 0; corner < 4; corner++)
-            if (activeId == GetWindowResizeCornerId(window, corner))
-                return true;
-        for (int direction = 0; direction < 4; direction++)
-            if (activeId == GetWindowResizeBorderId(window, direction))
-                return true;
-        return false;
-    }
-
-    private static void EndTouchGesture()
-    {
-        s_touchGestureActive = false;
-        s_touchGestureClassified = false;
-        s_touchScrollPending = false;
-        s_touchScrolling = false;
-        s_touchStartedOnScrollbar = false;
-        s_touchStartedOnWindowMove = false;
-        s_touchStartedOnWindowResize = false;
-        s_touchScrollableAxes = 0;
-        s_touchScrollAxis = -1;
     }
 
     private static void DispatchJavaKeyEvent(

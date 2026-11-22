@@ -2,6 +2,8 @@
 
 Status: implemented
 
+[Automatic hit-window discovery](2026-11-22-automatic-imgui-touch-scroll.md) supersedes this registration approach.
+
 ## Problem
 
 The dynamic `ScrollMax` query added a custom CImGui export. The Android managed DLL then required a host AAR built with that export; the uploaded log shows `EntryPointNotFoundException` when the app loaded an older `cimgui.so`, followed by an ImGui frame assertion. The user requires the AAR and Native layer to remain unchanged.

@@ -122,8 +122,8 @@ public sealed unsafe class ImGuiEGLRenderer : IImGuiRenderer
             io.DisplaySize = new Vector2(width, height);
 
             StArray.ModManager.Android.Native.AndroidJavaInputBridge.DispatchPendingImGuiEvents();
+            ImGuiInputHandler.ApplyTouchScroll();
             ImGui.NewFrame();
-            StArray.ModManager.UI.ImGuiTouchScrollWhitelist.BeginFrame();
 
             // 构建 UI
             self.BuildUI();

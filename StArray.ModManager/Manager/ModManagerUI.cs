@@ -24,6 +24,8 @@ public partial class ModManagerUI
 
     private readonly Func<Task<ModInstallFile?>>? _pickModFile;
     private Task<ModInstallPackage?>? _modInstallTask;
+    private ModUpdateConfirmation? _modUpdateConfirmation;
+    private bool _openModUpdatePopup;
     private string? _expandedModId;
 
     // 通知
@@ -210,6 +212,7 @@ public partial class ModManagerUI
 
         RenderMainWindow();
         RenderModSettingsWindow();
+        RenderModUpdatePopup();
         RenderToast();
 
         // ── BehaviourManager: OnGUI（ImGui 窗口绘制之后） ──

@@ -8,6 +8,7 @@ internal sealed class ModInstallPackage(string stagingDirectory, string modDirec
     : IDisposable
 {
     public string ModDirectory { get; } = modDirectory;
+    public string StagingDirectory { get; } = stagingDirectory;
 
     public static ModInstallPackage Prepare(string modsDirectory, ModInstallFile selected)
     {
@@ -21,25 +22,28 @@ internal sealed class ModInstallPackage(string stagingDirectory, string modDirec
         // immediate children of mods/ and cannot discover packages inside this directory.
         string staging = Path.Combine(Path.GetFullPath(modsDirectory), ".starray-install",
             Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(staging);
+        string extracted = Path.Combine(staging, "extracted");
+        Directory.CreateDirectory(extracted);
         try
         {
             if (isZip)
             {
                 using var archive = new ZipArchive(selected.Content, ZipArchiveMode.Read, leaveOpen: true);
-                archive.ExtractToDirectory(staging);
+                archive.ExtractToDirectory(extracted);
             }
             else
             {
-                using var entry = File.Create(Path.Combine(staging, selected.Name));
+                using var entry = File.Create(Path.Combine(extracted, selected.Name));
                 selected.Content.CopyTo(entry);
             }
 
-            string modDirectory = FindModDirectory(staging);
-            string preferredName = modDirectory == staging
+            string modDirectory = FindModDirectory(extracted);
+            string preferredName = modDirectory == extracted
                 ? Path.GetFileNameWithoutExtension(selected.Name)
                 : Path.GetFileName(modDirectory);
-            return new ModInstallPackage(staging, modDirectory, preferredName);
+            string content = Path.Combine(staging, "content");
+            Directory.Move(modDirectory, content);
+            return new ModInstallPackage(staging, content, preferredName);
         }
         catch
         {
@@ -79,7 +83,7 @@ internal sealed class ModInstallPackage(string stagingDirectory, string modDirec
 
     public void Dispose() => DeleteStagingDirectory(stagingDirectory);
 
-    private static void DeleteStagingDirectory(string directory)
+    internal static void DeleteStagingDirectory(string directory)
     {
         try
         {

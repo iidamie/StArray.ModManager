@@ -9,6 +9,7 @@ public class ModLoader
 {
     private readonly List<ModEntry> _mods = new();
     private readonly string _modsDirectory;
+    private bool _pendingUpdatesChecked;
 
     /// <summary>已发现的 Mod 列表（只读）</summary>
     public IReadOnlyList<ModEntry> Mods => _mods.AsReadOnly();
@@ -33,6 +34,12 @@ public class ModLoader
     /// </summary>
     public void ScanMods()
     {
+        if (!_pendingUpdatesChecked)
+        {
+            _pendingUpdatesChecked = true;
+            ModUpdateQueue.Apply(_modsDirectory);
+        }
+
         // 保存当前已加载 Mod 的状态（扫描后恢复）
         var loadedStates = _mods
             .Where(m => m.LoadState == ModLoadState.Loaded)
@@ -110,6 +117,7 @@ public class ModLoader
     private ModEntry? DiscoverMod(string folderPath, string? entryDll = null)
     {
         var dirName = Path.GetFileName(folderPath);
+        bool inspectPackage = entryDll != null;
 
         if (entryDll == null)
         {
@@ -126,7 +134,7 @@ public class ModLoader
         {
             // 探测性元数据读取走临时 ALC，读完即弃：既不锁文件，也不把类型
             // 留在默认上下文（否则后续正式加载会出现重复类型/版本冲突）。
-            var probe = new ModLoadContext($"Probe:{dirName}", folderPath, _managerDir);
+            var probe = new ModLoadContext($"Probe:{dirName}", folderPath, _managerDir, metadataOnly: inspectPackage);
             try
             {
                 // 探测只读元数据：流式加载即可（不锁文件；Location 无人消费）
@@ -302,7 +310,7 @@ public class ModLoader
             LoadMod(mod);
     }
 
-    internal ModEntry InstallMod(ModInstallPackage package)
+    internal ModEntry InspectModPackage(ModInstallPackage package)
     {
         ModEntry? mod = null;
         foreach (string dll in package.GetEntryCandidates())
@@ -315,10 +323,27 @@ public class ModLoader
         if (mod?.EntryPoint == null || string.IsNullOrWhiteSpace(mod.Id))
             throw new InvalidDataException(L10n.Get("ModInstall_NoEntry"));
 
-        if (_mods.Any(existing => string.Equals(existing.Id, mod.Id, StringComparison.OrdinalIgnoreCase)))
-            throw new InvalidOperationException(L10n.Get("ModInstall_AlreadyInstalled", mod.Id));
+        return mod;
+    }
 
-        string entryName = Path.GetFileName(mod.EntryPoint);
+    internal ModEntry? FindInstalledMod(string id)
+    {
+        ModEntry[] matches = _mods
+            .Where(mod => string.Equals(mod.Id, id, StringComparison.OrdinalIgnoreCase))
+            .Take(2).ToArray();
+        if (matches.Length == 0)
+            return null;
+        if (matches.Length != 1 || matches[0].Id != id)
+            throw new InvalidOperationException(L10n.Get("ModInstall_IdConflict", id));
+        return matches[0];
+    }
+
+    internal ModEntry InstallMod(ModInstallPackage package, ModEntry mod)
+    {
+        if (FindInstalledMod(mod.Id) != null)
+            throw new InvalidOperationException(L10n.Get("ModInstall_IdConflict", mod.Id));
+
+        string entryName = Path.GetFileName(mod.EntryPoint!);
         string folderName = Path.GetFileNameWithoutExtension(entryName);
         if (!ModInstallPackage.IsSafeName(folderName))
             throw new InvalidDataException(L10n.Get("ModInstall_NoEntry"));
@@ -332,6 +357,14 @@ public class ModLoader
         mod.FolderPath = destination;
         mod.EntryPoint = Path.Combine(destination, entryName);
         return AddMod(mod);
+    }
+
+    internal void QueueModUpdate(ModInstallPackage package, ModEntry installed, ModEntry replacement)
+    {
+        if (!ReferenceEquals(FindInstalledMod(replacement.Id), installed))
+            throw new InvalidOperationException(L10n.Get("ModInstall_IdConflict", replacement.Id));
+
+        ModUpdateQueue.Schedule(ModsDirectory, package, installed, replacement);
     }
 
     /// <summary>

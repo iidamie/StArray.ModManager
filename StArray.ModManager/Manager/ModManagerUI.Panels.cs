@@ -157,9 +157,12 @@ partial class ModManagerUI
         ImGui.PopStyleVar();
     }
 
+    private sealed record ModUpdateConfirmation(ModInstallPackage Package, ModEntry Installed, ModEntry Replacement);
+
     private void RenderAddModButton()
     {
-        ImGui.BeginDisabled(_pickModFile == null || _modInstallTask != null);
+        bool busy = _modInstallTask != null || _modUpdateConfirmation != null;
+        ImGui.BeginDisabled(_pickModFile == null || busy);
         if (ImGui.Button(FontAwesome7.Plus + " " + L10n.Get("Btn_AddMod")) && _pickModFile is { } picker)
         {
             _modInstallTask = PrepareModInstallAsync(picker);
@@ -169,7 +172,7 @@ partial class ModManagerUI
             ImGui.SetTooltip(L10n.Get("ModInstall_FileHint"));
         ImGui.EndDisabled();
 
-        if (_modInstallTask != null)
+        if (_modInstallTask != null || _modUpdateConfirmation != null)
         {
             ImGui.SameLine();
             ImGui.TextDisabled(L10n.Get("ModInstall_InProgress"));
@@ -193,21 +196,94 @@ partial class ModManagerUI
             return;
 
         _modInstallTask = null;
+        ModInstallPackage? package = null;
         try
         {
-            using var package = task.GetAwaiter().GetResult();
+            package = task.GetAwaiter().GetResult();
             if (package == null)
                 return;
 
-            ModEntry mod = _modManager.InstallMod(package);
+            ModEntry candidate = _modManager.InspectModPackage(package);
+            if (_modManager.FindInstalledMod(candidate.Id) is { } installed)
+            {
+                _modUpdateConfirmation = new ModUpdateConfirmation(package, installed, candidate);
+                _openModUpdatePopup = true;
+                package = null; // The confirmation owns staging until it is accepted or dismissed.
+                return;
+            }
+
+            ModEntry mod = _modManager.InstallMod(package, candidate);
             _selectedMod = mod;
             _toastMessage = FontAwesome7.CircleCheck + " " + L10n.Get("ModInstall_Success", mod.Name);
+            _toastTimer = 5f;
         }
         catch (Exception exception)
         {
-            Logger.Error(nameof(ModManagerUI), $"Install mod: {exception}");
-            _toastMessage = FontAwesome7.CircleXmark + " " + L10n.Get("ModInstall_Failed", exception.Message);
+            ShowModInstallError(exception);
         }
+        finally
+        {
+            package?.Dispose();
+        }
+    }
+
+    private void RenderModUpdatePopup()
+    {
+        if (_modUpdateConfirmation is not { } update)
+            return;
+
+        string title = L10n.Get("ModInstall_UpdateTitle") + "###ModInstallUpdate";
+        if (_openModUpdatePopup)
+        {
+            ImGui.OpenPopup(title);
+            _openModUpdatePopup = false;
+        }
+
+        ImGui.SetNextWindowPos(ImGui.GetMainViewport().GetCenter(), ImGuiCond.Appearing, new Vector2(0.5f));
+        bool open = true;
+        bool confirmed = false;
+        bool cancelled = false;
+        if (ImGui.BeginPopupModal(title, ref open, ImGuiWindowFlags.AlwaysAutoResize))
+        {
+            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + ImGui.GetFontSize() * 24);
+            ImGui.TextUnformatted(L10n.Get("ModInstall_UpdatePrompt",
+                update.Installed.Name, update.Installed.Version, update.Replacement.Version));
+            ImGui.PopTextWrapPos();
+
+            confirmed = ImGui.Button(L10n.Get("ModInstall_UpdateConfirm"));
+            ImGui.SameLine();
+            cancelled = ImGui.Button(L10n.Get("ModInstall_Cancel"));
+            if (confirmed || cancelled)
+                ImGui.CloseCurrentPopup();
+            ImGui.EndPopup();
+        }
+
+        if (confirmed)
+        {
+            try
+            {
+                _modManager.QueueModUpdate(update.Package, update.Installed, update.Replacement);
+                _toastMessage = FontAwesome7.CircleCheck + " " +
+                    L10n.Get("ModInstall_UpdateQueued", update.Replacement.Name);
+                _toastTimer = 5f;
+            }
+            catch (Exception exception)
+            {
+                ShowModInstallError(exception);
+            }
+        }
+
+        if (confirmed || cancelled || !open || !ImGui.IsPopupOpen(title))
+        {
+            _modUpdateConfirmation = null;
+            update.Package.Dispose();
+        }
+    }
+
+    private void ShowModInstallError(Exception exception)
+    {
+        Logger.Error(nameof(ModManagerUI), $"Install mod: {exception}");
+        _toastMessage = FontAwesome7.CircleXmark + " " + L10n.Get("ModInstall_Failed", exception.Message);
         _toastTimer = 5f;
     }
 }

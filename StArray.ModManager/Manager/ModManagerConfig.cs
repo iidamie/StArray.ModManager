@@ -22,6 +22,9 @@ public class ModManagerConfig
     /// <summary>Mod ID → 是否启用</summary>
     public Dictionary<string, bool> ModEnabled { get; set; } = new();
 
+    /// <summary>Allow saved mods to activate across successive render frames.</summary>
+    public bool LoadModsAcrossFrames { get; set; }
+
     private const string FileName = "modmanager_config.json";
 
     /// <summary>保存到指定目录（源生成器）</summary>

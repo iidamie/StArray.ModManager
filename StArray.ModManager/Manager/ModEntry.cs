@@ -28,6 +28,9 @@ public class ModEntry
     /// <summary>入口 DLL 或可执行文件路径</summary>
     public string? EntryPoint { get; set; }
 
+    internal string? DiscoveredPluginType { get; set; }
+    internal Guid DiscoveredModuleId { get; set; }
+
     /// <summary>是否已启用</summary>
     public bool IsEnabled { get; set; }
 

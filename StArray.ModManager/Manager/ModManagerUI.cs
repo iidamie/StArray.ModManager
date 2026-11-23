@@ -35,6 +35,7 @@ public partial class ModManagerUI
     private bool _configApplied;
     private float _lastFrameTime;
     private bool _autoEnabled;
+    private Queue<ModEntry>? _startupMods;
     private bool _visible = true;
 
     /// <summary>初始化 UI，加载配置并扫描 Mod</summary>
@@ -52,7 +53,7 @@ public partial class ModManagerUI
         _config = ModManagerConfig.Load(_configDir);
         if (string.IsNullOrEmpty(_config.ModsDirectory))
             _config.ModsDirectory = _modManager.ModsDirectory;
-        _modManager.ScanMods();
+        _modManager.ScanMods(_configDir);
     }
 
     /// <summary>
@@ -117,6 +118,10 @@ public partial class ModManagerUI
     /// <summary>保存管理器全局配置</summary>
     public void SaveConfig()
     {
+        // A queued mod has not reached its saved state yet.
+        if (_startupMods != null)
+            return;
+
         _config.ModsDirectory = _modManager.ModsDirectory;
         _config.UiScale = ImGui.GetIO().FontGlobalScale;
         _config.GrabMinSize = ImGui.GetStyle().GrabMinSize;
@@ -137,14 +142,51 @@ public partial class ModManagerUI
     private void AutoEnableMods()
     {
         foreach (var mod in _modManager.Mods)
+            if (ShouldAutoEnable(mod))
+                EnableSavedMod(mod);
+    }
+
+    private bool ShouldAutoEnable(ModEntry mod) =>
+        _config.ModEnabled.TryGetValue(mod.Id, out bool enabled) && enabled
+        && mod.LoadState != ModLoadState.Loaded;
+
+    private void EnableSavedMod(ModEntry mod)
+    {
+        if (_modManager.LoadMod(mod))
+            Logger.Info(nameof(ModManagerUI), L10n.Get("Log_AutoEnable", mod.Name));
+    }
+
+    private void AdvanceStartupMods()
+    {
+        if (!_autoEnabled)
         {
-            if (_config.ModEnabled.TryGetValue(mod.Id, out var wasEnabled) && wasEnabled
-                && mod.LoadState != ModLoadState.Loaded)
+            _autoEnabled = true;
+            if (_config.LoadModsAcrossFrames)
             {
-                _modManager.LoadMod(mod);
-                Logger.Info(nameof(ModManagerUI), L10n.Get("Log_AutoEnable", mod.Name));
+                var queue = new Queue<ModEntry>(_modManager.Mods.Where(ShouldAutoEnable));
+                if (queue.Count > 0)
+                    _startupMods = queue;
             }
+            else
+            {
+                AutoEnableMods();
+            }
+            return;
         }
+
+        if (_startupMods is not { } pending)
+            return;
+
+        // Dependencies of a previously activated mod may already be loaded.
+        while (pending.TryDequeue(out var mod))
+        {
+            if (!ShouldAutoEnable(mod))
+                continue;
+            EnableSavedMod(mod);
+            break;
+        }
+        if (pending.Count == 0)
+            _startupMods = null;
     }
 
     private void OnLogMessage(Logger.Level level, string tag, string msg)
@@ -180,6 +222,10 @@ public partial class ModManagerUI
 
         if (!_visible)
         {
+            // Hiding the manager does not pause an activation queue that already started.
+            if (_startupMods != null)
+                AdvanceStartupMods();
+
             // 前景层：Mod 的 HUD 仍需绘制
             var fgList = ImGui.GetForegroundDrawList();
             foreach (var mod in _modManager.Mods)
@@ -196,11 +242,7 @@ public partial class ModManagerUI
             _configApplied = true;
         }
 
-        if (!_autoEnabled)
-        {
-            _autoEnabled = true;
-            AutoEnableMods();
-        }
+        AdvanceStartupMods();
 
         // 背景层：每个 Mod 在 ImGui 窗口下方绘制
         var bgDrawList = ImGui.GetBackgroundDrawList();
@@ -238,13 +280,17 @@ public partial class ModManagerUI
                 if (ImGui.BeginTabItem(L10n.Get("Tab_ModList")))
                 {
 
+                    ImGui.BeginDisabled(_startupMods != null);
                     if (ImGui.Button(FontAwesome7.MagnifyingGlass + " " + L10n.Get("Btn_ScanMods")))
                     {
-                        _modManager.ScanMods();
+                        _modManager.ScanMods(_configDir, refresh: true);
                         AutoEnableMods();
                     }
                     ImGui.SameLine();
                     RenderAddModButton();
+                    ImGui.EndDisabled();
+                    if (_startupMods is { } pending)
+                        ImGui.TextUnformatted(L10n.Get("Status_StartupMods", pending.Count));
 
                     ImGui.Separator();
 
@@ -269,12 +315,14 @@ public partial class ModManagerUI
                             RenderModStateIcon(mod);
                             ImGui.SameLine();
                             var enabled = mod.IsEnabled;
+                            ImGui.BeginDisabled(_startupMods != null);
                             if (ImGui.Checkbox($"##enabled_{mod.Id}", ref enabled))
                             {
                                 _modManager.ToggleMod(mod);
                                 mod.IsEnabled = enabled;
                                 SaveConfig();
                             }
+                            ImGui.EndDisabled();
 
                             ImGui.TableSetColumnIndex(1);
                             var isSelected = _selectedMod == mod;
@@ -348,8 +396,10 @@ public partial class ModManagerUI
 
                             ImGui.Text(L10n.Get("Settings_UnmanagedAsm"));
                             ImGui.TextWrapped(L10n.Get("Settings_UnmanagedAsm_Hint"));
+                            ImGui.BeginDisabled(_startupMods != null);
                             if (ImGui.Button($"{FontAwesome7.Cubes} {L10n.Get("Btn_GenUnmanagedAsm")}"))
                                 GenerateUnmanagedTypeAssembly();
+                            ImGui.EndDisabled();
                             ImGui.Separator();
 
                             ImGui.Text(L10n.Get("Settings_UiScale"));
@@ -372,12 +422,19 @@ public partial class ModManagerUI
                                 style.ScrollbarSize = scrollW;
 
                             ImGui.Separator();
+                            bool staggered = _config.LoadModsAcrossFrames;
+                            if (ImGui.Checkbox(L10n.Get("Settings_LoadModsAcrossFrames"), ref staggered))
+                                _config.LoadModsAcrossFrames = staggered;
+                            ImGui.TextWrapped(L10n.Get("Settings_LoadModsAcrossFrames_Hint"));
+
+                            ImGui.BeginDisabled(_startupMods != null);
                             if (ImGui.Button($"{FontAwesome7.FloppyDisk} 保存设置"))
                             {
                                 SaveConfig();
                                 _toastMessage = $"{FontAwesome7.CircleCheck} 设置已保存";
                                 _toastTimer = 2f;
                             }
+                            ImGui.EndDisabled();
                             ImGui.Separator();
                             ImGui.Text(L10n.Get("Settings_Shortcuts"));
                             ImGui.BulletText(L10n.Get("Settings_Shortcut_Scan"));

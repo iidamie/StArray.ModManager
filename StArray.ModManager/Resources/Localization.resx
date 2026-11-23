@@ -107,4 +107,7 @@
     <data name="ModInstall_UpdateBackup" xml:space="preserve"><value>无法恢复旧版，备份保留在 {0}。错误：{1}</value></data>
     <data name="ModInstall_UpdateApplied" xml:space="preserve"><value>已应用 Mod {0} 的更新。</value></data>
     <data name="ModInstall_UpdatePathConflict" xml:space="preserve"><value>无法更新 {0}，文件与目录占用了同一路径。</value></data>
+    <data name="Settings_LoadModsAcrossFrames" xml:space="preserve"><value>启动时分帧加载 Mod</value></data>
+    <data name="Settings_LoadModsAcrossFrames_Hint" xml:space="preserve"><value>保存后下次启动生效。重型 Mod 可能仍会卡顿一帧。若有 Mod 依赖游戏最早的启动事件，请关闭此选项。</value></data>
+    <data name="Status_StartupMods" xml:space="preserve"><value>正在启动 Mod，剩余 {0} 个。</value></data>
 </root>

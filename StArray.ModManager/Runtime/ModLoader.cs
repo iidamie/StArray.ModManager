@@ -1,6 +1,7 @@
-using StArray.ModManager.Resources;
+using System.Diagnostics;
 using System.Reflection;
 using StArray.ModManager.Manager;
+using StArray.ModManager.Resources;
 
 namespace StArray.ModManager.Runtime;
 
@@ -32,8 +33,11 @@ public class ModLoader
     /// <summary>
     /// 扫描 mods 目录，发现所有 Mod
     /// </summary>
-    public void ScanMods()
+    public void ScanMods() => ScanMods(null);
+
+    internal void ScanMods(string? cacheDirectory, bool refresh = false)
     {
+        long started = Stopwatch.GetTimestamp();
         if (!_pendingUpdatesChecked)
         {
             _pendingUpdatesChecked = true;
@@ -54,9 +58,38 @@ public class ModLoader
             return;
         }
 
+        ModDiscoveryCache? cache = cacheDirectory == null
+            ? null : new ModDiscoveryCache(cacheDirectory, _modsDirectory, _managerDir, refresh);
+        int cacheHits = 0;
+        int probed = 0;
         foreach (var dir in Directory.GetDirectories(_modsDirectory))
         {
-            var mod = DiscoverMod(dir);
+            string folderName = Path.GetFileName(dir);
+            if (folderName == ".starray-install")
+                continue;
+
+            string[] dlls = Directory.EnumerateFiles(dir)
+                .Where(file => Path.GetExtension(file).Equals(".dll", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            string? entry = dlls.FirstOrDefault(file => Path.GetFileNameWithoutExtension(file) == folderName)
+                ?? dlls.FirstOrDefault(file => !Path.GetFileNameWithoutExtension(file)
+                    .Equals("StArray.ModManager", StringComparison.OrdinalIgnoreCase));
+            if (entry == null)
+                continue;
+
+            var stamps = cache == null ? null : ModDiscoveryCache.GetFileStamps(dlls, dir);
+            var mod = cache?.TryGet(dir, entry, stamps);
+            if (mod == null)
+            {
+                probed++;
+                mod = DiscoverMod(dir, entry, inspectPackage: false);
+                if (mod != null)
+                    cache?.Remember(mod, stamps);
+            }
+            else
+            {
+                cacheHits++;
+            }
             if (mod != null)
             {
                 // 恢复之前已加载的状态
@@ -72,7 +105,10 @@ public class ModLoader
             }
         }
 
+        cache?.Save();
         Logger.Info(nameof(ModLoader), L10n.Get("Log_ModCount", _mods.Count));
+        Logger.Info(nameof(ModLoader),
+            $"Discovery finished in {Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0} ms ({cacheHits} cached, {probed} probed)");
     }
 
     /// <summary>
@@ -108,28 +144,31 @@ public class ModLoader
         return types.FirstOrDefault(t => t != null && IsPluginType(t));
     }
 
+    private static Type? ResolveDiscoveredPluginType(ModEntry mod, Assembly assembly)
+    {
+        if (mod.DiscoveredPluginType == null || mod.DiscoveredModuleId != assembly.ManifestModule.ModuleVersionId)
+            return null;
+
+        try
+        {
+            var type = assembly.GetType(mod.DiscoveredPluginType, throwOnError: false);
+            return type != null && IsPluginType(type) ? type : null;
+        }
+        catch (Exception exception) when (exception is TypeLoadException or IOException or BadImageFormatException)
+        {
+            return null;
+        }
+    }
+
     private static bool IsPluginType(Type t) =>
         typeof(IModPlugin).IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract;
 
     /// <summary>
     /// 从文件夹发现 Mod 信息
     /// </summary>
-    private ModEntry? DiscoverMod(string folderPath, string? entryDll = null)
+    private ModEntry? DiscoverMod(string folderPath, string entryDll, bool inspectPackage)
     {
         var dirName = Path.GetFileName(folderPath);
-        bool inspectPackage = entryDll != null;
-
-        if (entryDll == null)
-        {
-            var dlls = Directory.EnumerateFiles(folderPath)
-                .Where(f => Path.GetExtension(f).Equals(".dll", StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-            entryDll = dlls.FirstOrDefault(f => Path.GetFileNameWithoutExtension(f) == dirName)
-                ?? dlls.FirstOrDefault(f => !Path.GetFileNameWithoutExtension(f).Equals("StArray.ModManager", StringComparison.OrdinalIgnoreCase));
-        }
-
-        if (entryDll == null) return null;
-
         try
         {
             // 探测性元数据读取走临时 ALC，读完即弃：既不锁文件，也不把类型
@@ -162,6 +201,8 @@ public class ModLoader
                     Dependencies = plugin.Dependencies?.ToList() ?? new List<string>(),
                     FolderPath = folderPath,
                     EntryPoint = entryDll,
+                    DiscoveredPluginType = pluginType.FullName,
+                    DiscoveredModuleId = assembly.ManifestModule.ModuleVersionId,
                 };
             }
             finally
@@ -182,12 +223,18 @@ public class ModLoader
     /// </summary>
     public bool LoadMod(ModEntry mod)
     {
+        if (mod.LoadState == ModLoadState.Loading)
+        {
+            Logger.Error(nameof(ModLoader), $"Cyclic mod dependency: {mod.Id}");
+            return false;
+        }
         if (mod.LoadState == ModLoadState.Loaded)
         {
             Logger.Info(nameof(ModLoader), $"{mod.Name} 已经加载");
             return true;
         }
 
+        long started = Stopwatch.GetTimestamp();
         mod.LoadState = ModLoadState.Loading;
         mod.LoadError = null;
         OnModStateChanged?.Invoke(mod);
@@ -219,16 +266,19 @@ public class ModLoader
                     _managerDir);
 
                 var assembly = alc.LoadFromFilePath(mod.EntryPoint);
-                var pluginType = ResolvePluginType(assembly);
+                var pluginType = ResolveDiscoveredPluginType(mod, assembly) ?? ResolvePluginType(assembly);
                 if (pluginType != null)
                 {
                     var plugin = (IModPlugin)Activator.CreateInstance(pluginType)!;
                     mod.PluginInstance = plugin;
                     mod.LoadContext = alc;
+                    long callbackStarted = Stopwatch.GetTimestamp();
                     plugin.OnLoad();
+                    var callbackElapsed = Stopwatch.GetElapsedTime(callbackStarted);
 
                     if (plugin is IModSettings s)
                         ModManagerUI.LoadSettings(mod, s);
+                    Logger.Debug(nameof(ModLoader), $"{mod.Id} OnLoad: {callbackElapsed.TotalMilliseconds:F0} ms");
                 }
                 else
                 {
@@ -239,7 +289,8 @@ public class ModLoader
 
             mod.IsEnabled = true;
             mod.LoadState = ModLoadState.Loaded;
-            Logger.Info(nameof(ModLoader), $"{mod.Name} 加载成功");
+            Logger.Info(nameof(ModLoader),
+                $"{mod.Name} 加载成功 ({Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0} ms)");
         }
         catch (Exception ex)
         {
@@ -315,7 +366,7 @@ public class ModLoader
         ModEntry? mod = null;
         foreach (string dll in package.GetEntryCandidates())
         {
-            mod = DiscoverMod(package.ModDirectory, dll);
+            mod = DiscoverMod(package.ModDirectory, dll, inspectPackage: true);
             if (mod != null)
                 break;
         }

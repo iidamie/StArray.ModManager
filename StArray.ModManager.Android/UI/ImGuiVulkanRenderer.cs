@@ -46,6 +46,7 @@ public sealed unsafe class ImGuiVulkanRenderer : IImGuiRenderer
     // ===== IImGuiRenderer =====
 
     private bool _initialized;
+    private readonly AndroidImGuiStartup _startup = new();
     private Action _onRender = () => { };
 
     event Action IImGuiRenderer.OnRender
@@ -335,6 +336,8 @@ public sealed unsafe class ImGuiVulkanRenderer : IImGuiRenderer
             if (!self._initialized)
             {
                 self.InitImGuiVulkan(queue);
+                if (!self._initialized)
+                    return self._prevQueuePresentKHR!(queue, pPresentInfo);
             }
 
             // 同步上一帧的渲染栅栏
@@ -391,12 +394,13 @@ public sealed unsafe class ImGuiVulkanRenderer : IImGuiRenderer
                 $"Using present queue as render queue: 0x{presentQueue:X}");
         }
 
+        if (!_startup.TryInitializeContext())
+            return;
+
         Logger.Error(nameof(ImGuiVulkanRenderer),
             $"Initializing ImGui Vulkan backend... Device=0x{_device:X} " +
             $"PhysicalDevice=0x{_physicalDevice:X} Queue=0x{_queue:X} Family={_queueFamily}");
 
-        // 创建 ImGui 上下文 + 加载嵌入式字体 msyh + FA 图标（共享接口）
-        ((IImGuiRenderer)this).InitImGui();
         var io = ImGui.GetIO();
         io.ConfigFlags |= ImGuiConfigFlags.NavEnableKeyboard;
         io.FontGlobalScale = 3.0f;

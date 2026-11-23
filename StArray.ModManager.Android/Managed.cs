@@ -19,11 +19,10 @@ public static class Managed
     public static string AssemblyPath = string.Empty;
     private static StreamWriter? _logWriter;
     private static readonly object _logLock = new();
-    /// <summary>原生入口，初始化 Logger 桥接、扫描 Mod、启动 ImGui</summary>
+    /// <summary>原生入口，复制启动参数并安排托管初始化。</summary>
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static int Entry(int argc, IntPtr argv)
     {
-        Benchmark.Begin();
         Logger.OnLog += (level, tag, msg) =>
         {
             var prio = level switch
@@ -46,6 +45,27 @@ public static class Managed
         string modsPath = args.Length > 0
             ? args[0]
             : Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!, "..", "mods");
+        _ = Task.Run(() => Initialize(modsPath));
+        return 0;
+    }
+
+    private static void Initialize(string modsPath)
+    {
+        long started = Stopwatch.GetTimestamp();
+        try
+        {
+            StartManager(modsPath);
+            Logger.Info($"{nameof(Managed)}-Benchmark",
+                $"Startup finished in {Stopwatch.GetElapsedTime(started).TotalSeconds:F3}s (background)");
+        }
+        catch (Exception exception)
+        {
+            Logger.Error(nameof(Managed), $"Manager initialization failed: {exception}");
+        }
+    }
+
+    private static void StartManager(string modsPath)
+    {
         var logcat = new LogcatCapture(Path.Combine(Path.GetDirectoryName(modsPath), "logcat-output.txt"));
         logcat.StartAsync();
         AssemblyPath = Path.Combine(Path.GetDirectoryName(modsPath), "manager", typeof(Managed).Namespace + ".dll");
@@ -78,9 +98,6 @@ public static class Managed
         ImGuiEGLRender.OnRender += ui.Render;
         ImGuiEGLRender.OnRender += picker.Render;
         ImGuiEGLRender.Install();
-
-        Logger.Info($"{nameof(Managed)}-Benchmark", $"=== Startup total: {Benchmark.End():F3}s ===");
-        return 0;
     }
     
     [DllImport("modmanager", EntryPoint = "modmanager_il2cpp_init")]

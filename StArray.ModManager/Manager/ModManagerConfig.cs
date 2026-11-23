@@ -23,7 +23,7 @@ public class ModManagerConfig
     public Dictionary<string, bool> ModEnabled { get; set; } = new();
 
     /// <summary>Allow saved mods to activate across successive render frames.</summary>
-    public bool LoadModsAcrossFrames { get; set; }
+    public bool LoadModsAcrossFrames { get; set; } = true;
 
     private const string FileName = "modmanager_config.json";
 

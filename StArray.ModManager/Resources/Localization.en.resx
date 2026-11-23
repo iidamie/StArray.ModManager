@@ -105,6 +105,6 @@
     <data name="ModInstall_UpdateApplied" xml:space="preserve"><value>Applied the update for mod {0}.</value></data>
     <data name="ModInstall_UpdatePathConflict" xml:space="preserve"><value>Cannot update {0} because a file and a folder use the same path.</value></data>
     <data name="Settings_LoadModsAcrossFrames" xml:space="preserve"><value>Load mods across startup frames</value></data>
-    <data name="Settings_LoadModsAcrossFrames_Hint" xml:space="preserve"><value>Save to apply at the next launch. Heavy mods may still stall one frame. Keep this off if a mod needs the earliest game startup events.</value></data>
+    <data name="Settings_LoadModsAcrossFrames_Hint" xml:space="preserve"><value>Save to apply at the next launch. Heavy mods may still stall one frame. Turn this off if a mod needs the earliest game startup events.</value></data>
     <data name="Status_StartupMods" xml:space="preserve"><value>Starting mods. {0} remaining.</value></data>
 </root>

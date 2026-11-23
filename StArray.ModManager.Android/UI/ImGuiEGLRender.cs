@@ -58,6 +58,7 @@ public sealed unsafe class ImGuiEGLRenderer : IImGuiRenderer
     }
 
     private bool _initialized;
+    private readonly AndroidImGuiStartup _startup = new();
     private Action _onRender = () => { };
 
     event Action IImGuiRenderer.OnRender
@@ -75,17 +76,15 @@ public sealed unsafe class ImGuiEGLRenderer : IImGuiRenderer
     private bool InstallInstance()
     {
         HookHelper.Instance = new DobbyHook();
-        EglHooks.InstallHooks();
-        EglHooks.OnEglSwapBuffers = OnSwapBuffers;
-
-
-
         // 回放 Install 之前缓存的静态事件订阅
         if (s_pendingOnRender != null)
         {
             _onRender += s_pendingOnRender;
             s_pendingOnRender = null;
         }
+
+        EglHooks.InstallHooks();
+        EglHooks.OnEglSwapBuffers = OnSwapBuffers;
         return true;
     }
 
@@ -111,7 +110,9 @@ public sealed unsafe class ImGuiEGLRenderer : IImGuiRenderer
 
             if (!self._initialized)
             {
-                self.InitImGui(display, surface);
+                self.InitImGui();
+                if (!self._initialized)
+                    return EglHooks.HookEglSwapBuffersOriginal(display, surface);
             }
 
             // 使用官方 backend 的 NewFrame
@@ -149,18 +150,11 @@ public sealed unsafe class ImGuiEGLRenderer : IImGuiRenderer
         return EglHooks.HookEglSwapBuffersOriginal(display, surface);
     }
 
-    private void InitImGui(IntPtr display, IntPtr surface)
+    private void InitImGui()
     {
-        if (_initialized) return;
-        // 从 EGL surface 获取 ANativeWindow
-        if (!Egl.QuerySurface(display, surface, Egl.WIDTH, out var width) ||
-            !Egl.QuerySurface(display, surface, Egl.HEIGHT, out var height))
-        {
-            Logger.Error(nameof(ImGuiEGLRenderer), "Failed to query EGL surface for initialization");
+        if (!_startup.TryInitializeContext())
             return;
-        }
-        // 创建 ImGui 上下文 + 加载嵌入式字体 msyh + FA 图标（共享接口）
-        ((IImGuiRenderer)this).InitImGui();
+
         ImGuiInputHandler.IsInitialized = true;
         var io = ImGui.GetIO();
         io.ConfigFlags |= ImGuiConfigFlags.NavEnableKeyboard;
